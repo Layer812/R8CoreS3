@@ -294,11 +294,54 @@ static int singlevaraux (FuncState *fs, TString *n, expdesc *var, int base) {
 }
 
 
+/*
+** PICO-8 compat: certain math/bitwise functions are compiled as custom VM
+** opcodes in PICO-8 and therefore bypass any local _ENV parameter entirely.
+** Functions NOT in this list (sqrt, sgn, abs, add, del, all, printh, ...) go
+** through _ENV as normal — carts that use them inside _ENV-param functions
+** rely on the passed table having __index set to the real global env.
+*/
+static int is_pico8_builtin (TString *name) {
+  static const char * const builtins[] = {
+    "flr","ceil","sin","cos","max","min","mid","atan2",
+    "band","bor","bxor","bnot","shl","shr","lshr","rotl","rotr",
+    "tostr","tonum","chr","ord",
+    NULL
+  };
+  const char *s = getstr(name);
+  int i;
+  for (i = 0; builtins[i]; i++)
+    if (strcmp(s, builtins[i]) == 0) return 1;
+  return 0;
+}
+
 static void singlevar (LexState *ls, expdesc *var) {
   TString *varname = str_checkname(ls);
   FuncState *fs = ls->fs;
   if (singlevaraux(fs, varname, var, 1) == VVOID) {  /* global name? */
     expdesc key;
+    /* PICO-8 compat: if _ENV is a function parameter and the variable is a
+       known pico-8 builtin, resolve it via the outer real _ENV (as an upvalue)
+       instead of the local _ENV param, matching PICO-8's opcode behavior. */
+    {
+      int env_reg = searchvar(fs, ls->envn);
+      if (env_reg >= 0 && env_reg < (int)fs->f->numparams
+          && fs->prev != NULL && is_pico8_builtin(varname)) {
+        TString *outerenvname = luaS_newliteral(ls->L, "__p8oe");
+        int outer_upval = searchupvalue(fs, outerenvname);
+        if (outer_upval < 0) {
+          expdesc outerenv;
+          if (singlevaraux(fs->prev, ls->envn, &outerenv, 0) != VVOID)
+            outer_upval = newupvalue(fs, outerenvname, &outerenv);
+        }
+        if (outer_upval >= 0) {
+          init_exp(var, VUPVAL, outer_upval);
+          codestring(ls, &key, varname);
+          luaK_indexed(fs, var, &key);
+          return;
+        }
+      }
+    }
     singlevaraux(fs, ls->envn, var, 1);  /* get environment variable */
     lua_assert(var->k == VLOCAL || var->k == VUPVAL);
     codestring(ls, &key, varname);  /* key is variable name */
@@ -1291,20 +1334,25 @@ static void whilestat (LexState *ls, int line) {
   enterblock(fs, &bl, 1);
   int short_while = ls->t.token != TK_DO && ls->t.token != TK_EOS
                  && ls->braces == 0 && line == ls->linenumber;
-  if (short_while)
+  if (short_while) {
     ls->emiteol = 1;
+    ls->short_nest++;
+  }
   else
     checknext(ls, TK_DO);
   block(ls);
   luaK_jumpto(fs, whileinit);
   if (!short_while)
     check_match(ls, TK_END, TK_WHILE, line);
-  else if (ls->t.token == TK_EOL || ls->t.token == TK_EOS)
-    luaX_next(ls);  /* eat EOL or EOS */
-  else if (block_follow(ls, 1))
-    ls->emiteol = 0;  /* close the short WHILE */
-  else
-    check_match(ls, TK_EOL, TK_WHILE, line);  /* we expected EOL */
+  else {
+    ls->short_nest--;
+    if (ls->t.token == TK_EOL || ls->t.token == TK_EOS)
+      luaX_next(ls);  /* eat EOL or EOS */
+    else if (block_follow(ls, 1))
+      ls->emiteol = 0;  /* close the short WHILE */
+    else
+      check_match(ls, TK_EOL, TK_WHILE, line);  /* we expected EOL */
+  }
   leaveblock(fs);
   luaK_patchtohere(fs, condexit);  /* false conditions finish the loop */
 }
@@ -1445,8 +1493,10 @@ static int test_then_block (LexState *ls, int *escapelist) {
   expr(ls, &v);  /* read condition */
   short_if &= ls->t.token != TK_THEN && ls->t.token != TK_DO && ls->t.token != TK_EOS
            && ls->braces == 0 && line == ls->linenumber;
-  if (short_if)
+  if (short_if) {
     ls->emiteol = 1;
+    ls->short_nest++;
+  }
   else {
     /* PICO-8 allows 'do' as alternative to 'then' in if statements */
     if (ls->t.token == TK_DO || ls->t.token == TK_THEN)
@@ -1491,13 +1541,16 @@ static void ifstat (LexState *ls, int line) {
   if (testnext(ls, TK_ELSE))
     block(ls);  /* `else' part */
   if (!short_if)
-    check_match(ls, TK_END, TK_IF, line);
-  else if (ls->t.token == TK_EOL || ls->t.token == TK_EOS)
-    luaX_next(ls);  /* eat EOL or EOS */
-  else if (block_follow(ls, 1))
-    ls->emiteol = 0;  /* close the short IF */
-  else
-    check_match(ls, TK_EOL, TK_IF, line);  /* we expected EOL */
+     check_match(ls, TK_END, TK_IF, line);
+  else {
+    ls->short_nest--;
+    if (ls->t.token == TK_EOL || ls->t.token == TK_EOS)
+      luaX_next(ls);  /* eat EOL or EOS */
+    else if (block_follow(ls, 1))
+      ls->emiteol = 0;  /* close the short IF */
+    else
+      check_match(ls, TK_EOL, TK_IF, line);  /* we expected EOL */
+  }
   luaK_patchtohere(fs, escapelist);  /* patch escape list to 'if' end */
 }
 
@@ -1635,6 +1688,14 @@ static void shortprint (LexState *ls) {
 
   if (!testnext(ls, TK_EOS)) /* check that we are at EOL or EOS */
     check_match(ls, TK_EOL, '?', line);
+
+  /* If we're inside a short-if/while, it was relying on TK_EOL to terminate
+     itself, but shortprint just consumed that EOL. Re-inject a synthetic
+     TK_EOL so the enclosing short block can still see it and terminate. */
+  if (ls->short_nest > 0) {
+    ls->lookahead = ls->t;
+    ls->t.token = TK_EOL;
+  }
 
   int base, nparams;
   lua_assert(f.k == VNONRELOC);

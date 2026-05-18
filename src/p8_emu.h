@@ -8,6 +8,11 @@
 #ifndef P8_EMU_H
 #define P8_EMU_H
 
+#if defined(_WIN32)
+#include <direct.h>   // _mkdir
+#else
+#include <sys/stat.h> // mkdir
+#endif
 #include <limits.h>
 #include <setjmp.h>
 #include <stdbool.h>
@@ -42,6 +47,12 @@
 #define IS_EVEN(n) (((n) ^ 1) == ((n) + 1))
 #define NIBBLE_SWAP(n) (((n) << 4) | ((n) >> 4))
 #define ARGB_TO_RGB565(argb) ((((argb) >> 8) & 0xF800) | (((argb) >> 5) & 0x07E0) | (((argb) >> 3) & 0x001F))
+
+#if defined(_WIN32)
+#define MKDIR(p) _mkdir(p)
+#else
+#define MKDIR(p) mkdir((p), 0777)
+#endif
 
 #ifdef __DA1470x__
 #define SCREEN_WIDTH 240
@@ -129,7 +140,7 @@
 #define GLYPH_HEIGHT 6
 #define SPRITE_WIDTH 8
 #define SPRITE_HEIGHT 8
-#define BUTTON_COUNT 6
+#define BUTTON_COUNT 7
 #define BUTTON_REPEAT_COUNT 6
 #define BUTTON_INTERNAL_COUNT 13
 #define PLAYER_COUNT 2
@@ -172,6 +183,7 @@
 #define STAT_RAW_GC 99
 #define STAT_BREADCRUMB 100
 #define STAT_BBS_CART_ID 101
+#define STAT_LOAD_RESULT 107
 #define STAT_PCM_BUFFER_SIZE 108
 #define STAT_PCM_APP_BUFFER 109
 #define STAT_CURRENT_PATH 124
@@ -266,6 +278,7 @@ extern char *m_font;
 
 extern uint8_t *m_overlay_memory;
 extern char *current_cart_dir;
+extern char *current_cart_path;
 
 extern char *m_breadcrumb;
 
@@ -306,7 +319,7 @@ void p8_pump_events(void);
 int p8_shutdown(void);
 void p8_render();
 void p8_reset(void);
-char *p8_resolve_relative_path(const char *filename);
+char *p8_resolve_relative_path(const char *filename, bool for_cstore);
 void __attribute__ ((noreturn)) p8_abort();
 void __attribute__ ((noreturn)) p8_restart();
 void p8_seed_rng_state(uint32_t seed);

@@ -26,6 +26,7 @@
 #include <unistd.h>   // sysconf
 #include <stdio.h>    // fopen/fscanf
 #endif
+#include <errno.h>
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -38,6 +39,7 @@
 #include "p8_print_helper.h"
 #include "pico_font.h"
 #include "p8_parser.h"
+#include "p8_cstore.h"
 #include "p8_pause_menu.h"
 #include "lua_api.h"
 #include "lua.h"
@@ -56,6 +58,8 @@ static char *m_clipboard = NULL;
 char m_str_buffer[256] = {0};
 
 static int m_tline_precision = 13;
+
+static int m_load_result = 0;  /* stat(107): 1=success, -1=not found, -2=fetch failed, -3=no bbs */
 
 void lua_load_api();
 void lua_shutdown_api();
@@ -84,12 +88,17 @@ static unsigned addr_remap(unsigned address)
 // camera([x,] [y])
 int camera(lua_State *L)
 {
+    int prev_cx, prev_cy;
+    camera_get(&prev_cx, &prev_cy);
+
     int cx = lua_gettop(L) >= 1 ? lua_tointeger(L, 1) : 0;
     int cy = lua_gettop(L) >= 2 ? lua_tointeger(L, 2) : 0;
 
     camera_set(cx, cy);
 
-    return 0;
+    lua_pushinteger(L, prev_cx);
+    lua_pushinteger(L, prev_cy);
+    return 2;
 }
 
 // circ(x, y, [r,] [col])
@@ -98,7 +107,7 @@ int circ(lua_State *L)
     int x = lua_tointeger(L, 1);
     int y = lua_tointeger(L, 2);
     int r = lua_gettop(L) >= 3 ? lua_tointeger(L, 3) : 4;
-    int col = lua_gettop(L) >= 4 ? lua_tointeger(L, 4) : pencolor_get() & 0xF;
+    int col = lua_gettop(L) >= 4 ? lua_tointeger(L, 4) : pencolor_get();
     int fillp = lua_gettop(L) >= 4 ? (fix32_bits(lua_tonumber(L, 4)) & 0xffff) : 0;
 
     if (lua_gettop(L) >= 3 && (m_memory[MEMORY_MISCFLAGS] & 0x2)) {
@@ -106,6 +115,9 @@ int circ(lua_State *L)
         if (r_real - r >= 0.5)
             r++;
     }
+
+    if (lua_gettop(L) >= 4)
+        pencolor_set(col);
 
     draw_circ(x, y, r, col, fillp);
 
@@ -118,7 +130,7 @@ int circfill(lua_State *L)
     int x = lua_tointeger(L, 1);
     int y = lua_tointeger(L, 2);
     int r = lua_gettop(L) >= 3 ? lua_tointeger(L, 3) : 4;
-    int col = lua_gettop(L) >= 4 ? lua_tointeger(L, 4) : pencolor_get() & 0xF;
+    int col = lua_gettop(L) >= 4 ? lua_tointeger(L, 4) : pencolor_get();
     int fillp = lua_gettop(L) >= 4 ? (fix32_bits(lua_tonumber(L, 4)) & 0xffff) : 0;
 
     if (lua_gettop(L) >= 3 && (m_memory[MEMORY_MISCFLAGS] & 0x2)) {
@@ -126,6 +138,9 @@ int circfill(lua_State *L)
         if (r_real - r >= 0.5)
             r++;
     }
+
+    if (lua_gettop(L) >= 4)
+        pencolor_set(col);
 
     draw_circfill(x, y, r, col, fillp);
 
@@ -135,6 +150,9 @@ int circfill(lua_State *L)
 // clip(x, y, w, h)
 int clip(lua_State *L)
 {
+    int prev_x0, prev_y0, prev_x1, prev_y1;
+    clip_get(&prev_x0, &prev_y0, &prev_x1, &prev_y1);
+
     if (lua_gettop(L) == 0)
         clip_set(0, 0, P8_WIDTH, P8_HEIGHT);
     else
@@ -145,21 +163,24 @@ int clip(lua_State *L)
         int h = lua_tointeger(L, 4);
         bool clip_previous = lua_gettop(L) >= 5 ? lua_toboolean(L, 5) : false;
 
-        int prev_x0 = 0, prev_y0 = 0, prev_x1 = P8_WIDTH, prev_y1 = P8_HEIGHT;
-        if (clip_previous)
-            clip_get(&prev_x0, &prev_y0, &prev_x1, &prev_y1);
+        int clamp_x0 = 0, clamp_y0 = 0, clamp_x1 = P8_WIDTH, clamp_y1 = P8_HEIGHT;
+        if (clip_previous) { clamp_x0 = prev_x0; clamp_y0 = prev_y0; clamp_x1 = prev_x1; clamp_y1 = prev_y1; }
 
         int x1 = x0 + w;
         int y1 = y0 + h;
-        x0 = MAX(x0, prev_x0);
-        y0 = MAX(y0, prev_y0);
-        x1 = MIN(x1, prev_x1);
-        y1 = MIN(y1, prev_y1);
+        x0 = MAX(x0, clamp_x0);
+        y0 = MAX(y0, clamp_y0);
+        x1 = MIN(x1, clamp_x1);
+        y1 = MIN(y1, clamp_y1);
 
         clip_set(x0, y0, x1-x0, y1-y0);
     }
 
-    return 0;
+    lua_pushinteger(L, prev_x0);
+    lua_pushinteger(L, prev_y0);
+    lua_pushinteger(L, prev_x1 - prev_x0);
+    lua_pushinteger(L, prev_y1 - prev_y0);
+    return 4;
 }
 
 // cls([color])
@@ -175,24 +196,31 @@ int cls(lua_State *L)
 // color(col)
 int color(lua_State *L)
 {
+    int prev = pencolor_get();
     int col = lua_gettop(L) == 1 ? lua_tointeger(L, 1) : 6;
 
     pencolor_set(col);
 
-    return 0;
+    lua_pushinteger(L, prev);
+    return 1;
 }
 
 // cursor([x,] [y,] [col])
 int cursor(lua_State *L)
 {
+    int prev_x, prev_y;
+    cursor_get(&prev_x, &prev_y);
+
     int x = lua_gettop(L) >= 1 ? lua_tointeger(L, 1) : 0;
     int y = lua_gettop(L) >= 2 ? lua_tointeger(L, 2) : 0;
     int color = lua_gettop(L) >= 3 ? lua_tointeger(L, 3) : -1;
 
-    cursor_set(x, y, (color == -1) ? -1 : ((pencolor_get() & 0xf0) | color));
+    cursor_set(x, y, (color == -1) ? -1 : color);
     left_margin_set(x);
 
-    return 0;
+    lua_pushinteger(L, prev_x);
+    lua_pushinteger(L, prev_y);
+    return 2;
 }
 
 // fget(n, [f])
@@ -239,6 +267,19 @@ int flip(lua_State *L)
     return 0;
 }
 
+int holdframe(lua_State *L)
+{
+    (void)L;
+    return 0;
+}
+
+int _update_buttons(lua_State *L)
+{
+    (void)L;
+    p8_update_input();
+    return 0;
+}
+
 // fset(n, [f,] v)
 int fset(lua_State *L)
 {
@@ -280,16 +321,20 @@ int line(lua_State *L)
             y0 = lua_tointeger(L, 2);
             x1 = lua_tointeger(L, 3);
             y1 = lua_tointeger(L, 4);
-            col = lua_gettop(L) == 5 ? lua_tointeger(L, 5) : pencolor_get() & 0xF;
+            col = lua_gettop(L) >= 5 ? lua_tointeger(L, 5) : pencolor_get();
             fillp = lua_gettop(L) >= 5 ? (fix32_bits(lua_tonumber(L, 5)) & 0xffff) : 0;
+            if (lua_gettop(L) >= 5)
+                pencolor_set(col);
         } else {
             valid = !m_memory[MEMORY_LINE_VALID];
             x0 = m_memory[MEMORY_LINE_X] | (m_memory[MEMORY_LINE_X + 1] << 8);
             y0 = m_memory[MEMORY_LINE_Y] | (m_memory[MEMORY_LINE_Y + 1] << 8);
             x1 = lua_tointeger(L, 1);
             y1 = lua_tointeger(L, 2);
-            col = lua_gettop(L) == 3 ? lua_tointeger(L, 3) : pencolor_get() & 0xF;
+            col = lua_gettop(L) >= 3 ? lua_tointeger(L, 3) : pencolor_get();
             fillp = lua_gettop(L) >= 3 ? (fix32_bits(lua_tonumber(L, 3)) & 0xffff) : 0;
+            if (lua_gettop(L) >= 3)
+                pencolor_set(col);
         }
 
         if (valid)
@@ -312,8 +357,11 @@ int oval(lua_State *L)
     int y0 = lua_tointeger(L, 2);
     int x1 = lua_tointeger(L, 3);
     int y1 = lua_tointeger(L, 4);
-    int col = lua_gettop(L) >= 5 ? lua_tointeger(L, 5) : pencolor_get() & 0xF;
+    int col = lua_gettop(L) >= 5 ? lua_tointeger(L, 5) : pencolor_get();
     int fillp = lua_gettop(L) >= 5 ? (fix32_bits(lua_tonumber(L, 5)) & 0xffff) : 0;
+
+    if (lua_gettop(L) >= 5)
+        pencolor_set(col);
 
     draw_oval(x0, y0, x1, y1, col, fillp);
 
@@ -327,8 +375,11 @@ int ovalfill(lua_State *L)
     int y0 = lua_tointeger(L, 2);
     int x1 = lua_tointeger(L, 3);
     int y1 = lua_tointeger(L, 4);
-    int col = lua_gettop(L) >= 5 ? lua_tointeger(L, 5) : pencolor_get() & 0xF;
+    int col = lua_gettop(L) >= 5 ? lua_tointeger(L, 5) : pencolor_get();
     int fillp = lua_gettop(L) >= 5 ? (fix32_bits(lua_tonumber(L, 5)) & 0xffff) : 0;
+
+    if (lua_gettop(L) >= 5)
+        pencolor_set(col);
 
     draw_ovalfill(x0, y0, x1, y1, col, fillp);
 
@@ -345,7 +396,7 @@ int pal(lua_State *L)
     }
     else if (lua_istable(L, 1))
     {
-        int p = lua_gettop(L) == 2 ? lua_tointeger(L, 2) : PALTYPE_DRAW;
+        int p = lua_gettop(L) >= 2 ? lua_tointeger(L, 2) : PALTYPE_DRAW;
         lua_pushnil(L);
         while (lua_next(L, 1))
         {
@@ -363,20 +414,52 @@ int pal(lua_State *L)
         }
         lua_pop(L, 1);
     }
+    else if (lua_gettop(L) == 1)
+    {
+        int p = lua_tointeger(L, 1);
+        if (p == PALTYPE_DRAW) {
+            for (int i=0;i<16;++i)
+                color_set(PALTYPE_DRAW, i, i == 0 ? i | 0x10 : i);
+        } else if (p == PALTYPE_SCREEN) {
+            for (int i=0;i<16;++i)
+                color_set(PALTYPE_SCREEN, i, i);
+        } else if (p == PALTYPE_SECONDARY) {
+            color_set(PALTYPE_SECONDARY, 0, 0x00);
+            color_set(PALTYPE_SECONDARY, 1, 0x01);
+            color_set(PALTYPE_SECONDARY, 2, 0x12);
+            color_set(PALTYPE_SECONDARY, 3, 0x13);
+            color_set(PALTYPE_SECONDARY, 4, 0x24);
+            color_set(PALTYPE_SECONDARY, 5, 0x15);
+            color_set(PALTYPE_SECONDARY, 6, 0xd6);
+            color_set(PALTYPE_SECONDARY, 7, 0x67);
+            color_set(PALTYPE_SECONDARY, 8, 0x48);
+            color_set(PALTYPE_SECONDARY, 9, 0x49);
+            color_set(PALTYPE_SECONDARY, 10, 0x9a);
+            color_set(PALTYPE_SECONDARY, 11, 0x3b);
+            color_set(PALTYPE_SECONDARY, 12, 0xdc);
+            color_set(PALTYPE_SECONDARY, 13, 0x5d);
+            color_set(PALTYPE_SECONDARY, 14, 0x8e);
+            color_set(PALTYPE_SECONDARY, 15, 0xef);
+        }
+    }
     else
     {
         int c0 = lua_tointeger(L, 1);
         int c1 = lua_tointeger(L, 2);
         int p = lua_gettop(L) == 3 ? lua_tointeger(L, 3) : PALTYPE_DRAW;
 
+        uint8_t old_val = color_get(p, c0);
         uint8_t new_val;
         if (p == PALTYPE_DRAW) {
-            uint8_t old_val = color_get(p, c0);
             new_val = (c1 & 0xf) | (old_val & 0xf0);
         } else {
             new_val = c1 & 0xff;
         }
         color_set(p, c0, new_val);
+
+        // Return the old mapped color for this slot
+        lua_pushinteger(L, old_val & 0xf);
+        return 1;
     }
 
     return 0;
@@ -387,7 +470,10 @@ int palt(lua_State *L)
 {
     if (lua_gettop(L) == 0)
     {
-        reset_color();
+        for (int col=0;col<16;++col) {
+            uint8_t c = color_get(PALTYPE_DRAW, col);
+            color_set(PALTYPE_DRAW, col, col == 0 ? (c | 0x10) : (c & 0xf));
+        }
     }
     else if (lua_gettop(L) == 1)
     {
@@ -404,8 +490,12 @@ int palt(lua_State *L)
         int col = lua_tointeger(L, 1);
         int t = lua_toboolean(L, 2);
         uint8_t c = color_get(PALTYPE_DRAW, col);
+        bool prev_transparent = (c & 0x10) != 0;
 
         color_set(PALTYPE_DRAW, col, t ? (c | 0x10) : (c & 0xF));
+
+        lua_pushboolean(L, prev_transparent);
+        return 1;
     }
 
     return 0;
@@ -433,15 +523,16 @@ int pget(lua_State *L)
 // print(str, [x,] [y,] [col])
 int print(lua_State *L)
 {
-    size_t len;
-    const char *str = lua_tolstring(L, 1, &len);
+    size_t len = 0;
+    const char *str = lua_gettop(L) >= 1 ? lua_tolstring(L, 1, &len) : NULL;
+    if (!str) { str = ""; len = 0; }
     int right;
 
-    if (lua_gettop(L) >= 1 && lua_gettop(L) <= 2)
+    if (lua_gettop(L) <= 2)
     {
         int x, y;
         cursor_get(&x, &y);
-        int col = lua_gettop(L) == 2 ? lua_tointeger(L, 2) : pencolor_get() & 0xF;
+        int col = lua_gettop(L) == 2 ? lua_tointeger(L, 2) : pencolor_get();
         if (lua_gettop(L) == 2)
             pencolor_set(col);
         draw_text(str, len, x, y, col, left_margin_get(), (m_memory[MEMORY_MISCFLAGS] & 0x4) == 0, &x, &y, &right);
@@ -453,16 +544,14 @@ int print(lua_State *L)
     {
         int x = lua_tointeger(L, 2);
         int y = lua_tointeger(L, 3);
-        int col = lua_gettop(L) == 4 ? lua_tointeger(L, 4) : pencolor_get() & 0xF;
-        if (lua_gettop(L) == 4)
+        int col = lua_gettop(L) >= 4 ? lua_tointeger(L, 4) : pencolor_get();
+        if (lua_gettop(L) >= 4)
             pencolor_set(col);
 
         left_margin_set(x);
 
         draw_text(str, len, x, y, col, x, false, NULL, NULL, &right);
     }
-    else
-        assert(false);
 
     lua_pushinteger(L, right);
     return 1;
@@ -473,8 +562,10 @@ int pset(lua_State *L)
 {
     int x = lua_tointeger(L, 1);
     int y = lua_tointeger(L, 2);
-    int c = lua_gettop(L) == 3 ? lua_tointeger(L, 3) : pencolor_get() & 0xF;
+    int c = lua_gettop(L) == 3 ? lua_tointeger(L, 3) : pencolor_get();
     int fillp = lua_gettop(L) >= 3 ? (fix32_bits(lua_tonumber(L, 3)) & 0xffff) : 0;
+    if (lua_gettop(L) == 3)
+        pencolor_set(c);
     pixel_set(x, y, c, fillp, DRAWTYPE_GRAPHIC);
 
     return 0;
@@ -487,13 +578,16 @@ int rect(lua_State *L)
     int y0 = lua_tointeger(L, 2);
     int x1 = lua_tointeger(L, 3);
     int y1 = lua_tointeger(L, 4);
-    int col = lua_gettop(L) == 5 ? lua_tointeger(L, 5) : pencolor_get() & 0xF;
+    int col = lua_gettop(L) >= 5 ? lua_tointeger(L, 5) : pencolor_get();
     int fillp = lua_gettop(L) >= 5 ? (fix32_bits(lua_tonumber(L, 5)) & 0xffff) : 0;
 
     int left = MIN(x0, x1);
     int top = MIN(y0, y1);
     int right = MAX(x0, x1);
     int bottom = MAX(y0, y1);
+
+    if (lua_gettop(L) >= 5)
+        pencolor_set(col);
 
     draw_rect(left, top, right, bottom, col, fillp);
 
@@ -507,13 +601,16 @@ int rectfill(lua_State *L)
     int y0 = lua_tointeger(L, 2);
     int x1 = lua_tointeger(L, 3);
     int y1 = lua_tointeger(L, 4);
-    int col = lua_gettop(L) >= 5 ? lua_tointeger(L, 5) : pencolor_get() & 0xF;
+    int col = lua_gettop(L) >= 5 ? lua_tointeger(L, 5) : pencolor_get();
     int fillp = lua_gettop(L) >= 5 ? (fix32_bits(lua_tonumber(L, 5)) & 0xffff) : 0;
 
     int left = MIN(x0, x1);
     int top = MIN(y0, y1);
     int right = MAX(x0, x1);
     int bottom = MAX(y0, y1);
+
+    if (lua_gettop(L) >= 5)
+        pencolor_set(col);
 
     draw_rectfill(left, top, right, bottom, col, fillp);
 
@@ -528,12 +625,17 @@ int rrect(lua_State *L)
     int w = lua_tointeger(L, 3);
     int h = lua_tointeger(L, 4);
     int r = lua_gettop(L) >= 5 ? lua_tointeger(L, 5) : 0;
-    int col = lua_gettop(L) >= 6 ? lua_tointeger(L, 6) : pencolor_get() & 0xF;
+    int col = lua_gettop(L) >= 6 ? lua_tointeger(L, 6) : pencolor_get();
     int fillp = lua_gettop(L) >= 6 ? (fix32_bits(lua_tonumber(L, 6)) & 0xffff) : 0;
+
+    if (lua_gettop(L) >= 6)
+        pencolor_set(col);
 
     int right = left + w-1;
     int bottom = top + h-1;
     r = MAX(0, MIN(r, MIN(w, h) / 2));
+
+    if (is_bbox_offscreen(left, top, right, bottom)) return 0;
 
     draw_hline(left+r, top, right-r, col, fillp);
     draw_hline(left+r, bottom, right-r, col, fillp);
@@ -555,13 +657,18 @@ int rrectfill(lua_State *L)
     int w = lua_tointeger(L, 3);
     int h = lua_tointeger(L, 4);
     int r = lua_gettop(L) >= 5 ? lua_tointeger(L, 5) : 0;
-    int col = lua_gettop(L) >= 6 ? lua_tointeger(L, 6) : pencolor_get() & 0xF;
+    int col = lua_gettop(L) >= 6 ? lua_tointeger(L, 6) : pencolor_get();
     int fillp = lua_gettop(L) >= 6 ? (fix32_bits(lua_tonumber(L, 6)) & 0xffff) : 0;
     bool invert = fillp_invert_enabled(col);
+
+    if (lua_gettop(L) >= 6)
+        pencolor_set(col);
 
     int right = left + w;
     int bottom = top + h;
     r = MAX(0, MIN(r, MIN(w, h) / 2));
+
+    if (!invert && is_bbox_offscreen(left, top, right, bottom)) return 0;
 
     if (invert) {
         int cx, cy;
@@ -609,30 +716,46 @@ int sget(lua_State *L)
 // spr(n, x, y, [w,] [h,] [flip_x,] [flip_y])
 int spr(lua_State *L)
 {
-    assert(lua_isnumber(L, 2) && lua_isnumber(L, 3));
-
     int n = lua_tointeger(L, 1);
-    int x = lua_tointeger(L, 2);
-    int y = lua_tointeger(L, 3);
-    int w = 1;
-    int h = 1;
+    int x = lua_gettop(L) >= 2 ? lua_tointeger(L, 2) : 0;
+    int y = lua_gettop(L) >= 3 ? lua_tointeger(L, 3) : 0;
     bool flip_x = false, flip_y = false;
 
     if (lua_gettop(L) > 3)
     {
         assert(lua_gettop(L) >= 5);
 
-        w = lua_tointeger(L, 4);
-        h = lua_tointeger(L, 5);
+        lua_Number w_raw = lua_tonumber(L, 4);
+        lua_Number h_raw = lua_tonumber(L, 5);
 
         if (lua_gettop(L) >= 6)
             flip_x = lua_toboolean(L, 6);
 
         if (lua_gettop(L) >= 7)
             flip_y = lua_toboolean(L, 7);
-    }
 
-    draw_sprites(n, x, y, w, h, flip_x, flip_y);
+        // fix32 stores integers with no fractional bits (lower 16 bits == 0)
+        if ((w_raw & 0xFFFF) == 0 && (h_raw & 0xFFFF) == 0)
+        {
+            // Integer w/h: draw a w x h grid of sprites (standard path)
+            int w = fix32_to_int(w_raw);
+            int h = fix32_to_int(h_raw);
+            draw_sprites(n, x, y, w, h, flip_x, flip_y);
+        }
+        else
+        {
+            // Fractional w/h: compute pixel dimensions and draw at 1:1 scale
+            int sw = (int)(fix32_to_double(w_raw) * SPRITE_WIDTH + 0.5);
+            int sh = (int)(fix32_to_double(h_raw) * SPRITE_HEIGHT + 0.5);
+            int ssx = (n & 0xF) * SPRITE_WIDTH;
+            int ssy = (n >> 4) * SPRITE_HEIGHT;
+            draw_scaled_sprite(ssx, ssy, sw, sh, x, y, 1.0f, 1.0f, flip_x, flip_y);
+        }
+    }
+    else
+    {
+        draw_sprites(n, x, y, 1, 1, flip_x, flip_y);
+    }
 
     return 0;
 }
@@ -642,8 +765,10 @@ int sset(lua_State *L)
 {
     int x = lua_tointeger(L, 1);
     int y = lua_tointeger(L, 2);
-    int c = lua_gettop(L) >= 3 ? lua_tointeger(L, 3) : pencolor_get() & 0xF;
+    int c = lua_gettop(L) >= 3 ? lua_tointeger(L, 3) : pencolor_get();
 
+    if (lua_gettop(L) >= 3)
+        pencolor_set(c);
     if (x >= 0 && y >= 0 && x < P8_WIDTH && y < P8_HEIGHT)
         gfx_set(x, y, MEMORY_SPRITES, MEMORY_SPRITES_SIZE, c);
 
@@ -741,13 +866,17 @@ int tline(lua_State *L)
         uint32_t tmx = mx_bits & mask_x_bits;
         uint32_t tmy = my_bits & mask_y_bits;
 
-        int tx = (tmx >> precision) + offset_x;
-        int ty = (tmy >> precision) + offset_y;
+        int tx_raw = ((int32_t)tmx) >> precision;
+        int ty_raw = ((int32_t)tmy) >> precision;
+        int tx = tx_raw + offset_x;
+        int ty = ty_raw + offset_y;
 
         int celx = tx >> 3;
         int cely = ty >> 3;
         int index = 0;
-        if (!map_invalid && celx >= 0 && cely >= 0) {
+        // Bounds check uses pre-offset coordinates (PICO-8 behaviour: offset doesn't
+        // make a negative texture coordinate valid for map lookup).
+        if (!map_invalid && (tx_raw >> 3) >= 0 && (ty_raw >> 3) >= 0) {
             uint8_t ms = (cely >= 32 && map_start_upper < 0x80) ? map_start_lower : map_start_upper;
             int adj_cely = (cely >= 32 && map_start_upper < 0x80) ? cely - 32 : cely;
             int address = (ms << 8) + celx + adj_cely * map_width;
@@ -755,7 +884,6 @@ int tline(lua_State *L)
                 !(address >= 0x3000 && address < 0x8000))
                 index = m_memory[address];
         }
-
         if ((index != 0 || sprite_0_opaque) && (layer == 0 || ((layer & sprite_flags_base[index]) == layer))) {
             int spx = (index & 0xF) * 8 + (tx & 7);
             int spy = (index >> 4) * 8 + (ty & 7);
@@ -835,10 +963,7 @@ int btn(lua_State *L)
         int i = lua_tointeger(L, 1);
         int p = lua_gettop(L) >= 2 ? lua_tointeger(L, 2) : 0;
 
-        if (p >= PLAYER_COUNT)
-            p = 0;
-
-        if (i < BUTTON_COUNT)
+        if (i < BUTTON_COUNT && p < PLAYER_COUNT)
             lua_pushboolean(L, is_button_set(p, i, false));
         else
             lua_pushboolean(L, false);
@@ -861,10 +986,7 @@ int btnp(lua_State *L)
         int i = lua_tointeger(L, 1);
         int p = lua_gettop(L) >= 2 ? lua_tointeger(L, 2) : 0;
 
-        if (p >= PLAYER_COUNT)
-            p = 0;
-
-        if (i < BUTTON_COUNT)
+        if (i < BUTTON_COUNT && p < PLAYER_COUNT)
             lua_pushboolean(L, is_button_set(p, i, true));
         else
             lua_pushboolean(L, false);
@@ -886,14 +1008,20 @@ int btnp(lua_State *L)
 int music(lua_State *L)
 {
 #ifdef ENABLE_AUDIO
+    int prev = audio_stat(54);  // stat(54) = current music pattern, -1 if none
+
     int n = lua_tointeger(L, 1);
     int fadems = lua_to_or_default(L, integer, 2, 1);
     int channelmask = lua_to_or_default(L, integer, 3, 0);
 
     audio_music(n, fadems, channelmask);
-#endif
 
-    return 0;
+    lua_pushinteger(L, prev);
+    return 1;
+#else
+    lua_pushinteger(L, -1);
+    return 1;
+#endif
 }
 
 // sfx(n, [channel,] [offset,] [length])
@@ -1018,25 +1146,135 @@ int mset(lua_State *L)
 // cstore(destaddr, sourceaddr, len, [filename])
 int cstore(lua_State *L)
 {
-    fprintf(stderr, "warning: cstore() is not implemented\n");
-    return 0;
+    int nargs = lua_gettop(L);
+    unsigned destaddr  = nargs >= 1 ? lua_tounsigned(L, 1) : 0;
+    unsigned srcaddr   = nargs >= 2 ? lua_tounsigned(L, 2) : 0;
+    unsigned len       = nargs >= 3 ? lua_tounsigned(L, 3) : CART_MEMORY_SIZE;
+    const char *file_name = nargs >= 4 ? lua_tostring(L, 4) : NULL;
+
+    if (destaddr + len > CART_MEMORY_SIZE || srcaddr + len > (1 << 16)) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+
+    char *resolved_path = NULL;
+    if (file_name != NULL) {
+        // Append .p8 if no extension given
+        char *full_filename = NULL;
+        if (strstr(file_name, ".p8") == NULL && strstr(file_name, ".P8") == NULL) {
+            size_t flen = strlen(file_name) + 4;
+            full_filename = (char *)malloc(flen);
+            if (full_filename)
+                snprintf(full_filename, flen, "%s.p8", file_name);
+            file_name = full_filename;
+        }
+        resolved_path = p8_resolve_relative_path(file_name, true);
+        free(full_filename);
+    } else {
+        if (!current_cart_path) {
+            lua_pushinteger(L, 0);
+            return 1;
+        }
+        resolved_path = strdup(current_cart_path);
+    }
+
+    if (!resolved_path) {
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+
+    // Refuse to write .p8.png (not supported)
+    size_t rlen = strlen(resolved_path);
+    if (rlen >= 7 && strcmp(resolved_path + rlen - 7, ".p8.png") == 0) {
+        fprintf(stderr, "cstore: .p8.png output is not supported\n");
+        free(resolved_path);
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+
+    // Load existing cart data (preserves sections not being patched, including Lua)
+    uint8_t *work_mem = (uint8_t *)malloc(CART_MEMORY_SIZE);
+    const char *existing_lua = NULL;
+    uint8_t *file_buffer = NULL;
+    if (!work_mem) {
+        luaL_error(L, "out of memory");
+        free(resolved_path);
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+
+    p8_show_io_icon(true);
+
+    int ret = MKDIR(DEFAULT_CARTS_PATH);
+    if (ret == -1 && errno != EEXIST) {
+        fprintf(stderr, "cstore: failed to create carts directory: %s\n", strerror(errno));
+        free(resolved_path);
+        p8_show_io_icon(false);
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+
+    if (access(resolved_path, F_OK) == -1) {
+        if (errno != ENOENT) {
+            fprintf(stderr, "cstore: failed to access existing cart: %s\n", strerror(errno));
+            free(resolved_path);
+            p8_show_io_icon(false);
+            lua_pushinteger(L, 0);
+            return 1;
+        }
+        memset(work_mem, 0, CART_MEMORY_SIZE);
+        existing_lua = "";
+    } else if (parse_cart_file(resolved_path, work_mem, &existing_lua, &file_buffer, NULL) != 0) {
+        fprintf(stderr, "cstore: failed to read existing cart\n");
+        free(resolved_path);
+        p8_show_io_icon(false);
+        lua_pushinteger(L, 0);
+        return 1;
+    }
+
+    // Patch the requested region from runtime memory
+    memcpy(work_mem + destaddr, m_memory + srcaddr, len);
+
+    // Also update m_cart_memory when writing to the current cart
+    if (nargs < 4 || lua_isnil(L, 4))
+        memcpy(m_cart_memory + destaddr, m_memory + srcaddr, len);
+
+    write_cart_p8(resolved_path, existing_lua ? existing_lua : "", work_mem);
+
+    free(work_mem);
+    free(file_buffer);
+    free(resolved_path);
+
+    p8_show_io_icon(false);
+    lua_pushinteger(L, len);
+    return 1;
 }
 
 // memcpy(destaddr, sourceaddr, len)
 int _memcpy(lua_State *L)
 {
     unsigned destaddr = lua_tounsigned(L, 1);
+    unsigned orig_destaddr = destaddr;
     unsigned sourceaddr = lua_tounsigned(L, 2);
     unsigned len = lua_tounsigned(L, 3);
 
     if (len < 1 || destaddr == sourceaddr)
-        return 0;
+    {
+        lua_pushinteger(L, orig_destaddr);
+        return 1;
+    }
 
     if (sourceaddr < 0 || (sourceaddr + len) > (1 << 16))
-        return 0;
+    {
+        lua_pushinteger(L, orig_destaddr);
+        return 1;
+    }
 
     if (destaddr < 0 || (destaddr + len) > (1 << 16))
-        return 0;
+    {
+        lua_pushinteger(L, orig_destaddr);
+        return 1;
+    }
 
     while (len > 0) {
         unsigned chunk = MIN(MIN(len, 0x2000 - (sourceaddr & 0x1fff)), 0x2000 - (destaddr & 0x1fff));
@@ -1048,7 +1286,8 @@ int _memcpy(lua_State *L)
         len -= chunk;
     }
 
-    return 0;
+    lua_pushinteger(L, orig_destaddr);
+    return 1;
 }
 
 // memset(destaddr, val, len)
@@ -1133,7 +1372,8 @@ int poke(lua_State *L)
     if (addr >= MEMORY_CARTDATA && addr + 1 <= MEMORY_CARTDATA + MEMORY_CARTDATA_SIZE)
         p8_delayed_flush_cartdata();
 
-    return 0;
+    lua_pushinteger(L, 0);
+    return 1;
 }
 
 // poke2(addr, val1, ...)
@@ -1153,7 +1393,8 @@ int poke2(lua_State *L)
     if (addr >= MEMORY_CARTDATA && addr + 2 <= MEMORY_CARTDATA + MEMORY_CARTDATA_SIZE)
         p8_delayed_flush_cartdata();
 
-    return 0;
+    lua_pushinteger(L, 0);
+    return 1;
 }
 
 // poke4(addr, val1, ...)
@@ -1175,7 +1416,8 @@ int poke4(lua_State *L)
     if (addr >= MEMORY_CARTDATA && addr + 4 <= MEMORY_CARTDATA + MEMORY_CARTDATA_SIZE)
         p8_delayed_flush_cartdata();
 
-    return 0;
+    lua_pushinteger(L, 0);
+    return 1;
 }
 
 // reload(destaddr, sourceaddr, len, [filename])
@@ -1183,6 +1425,7 @@ int reload(lua_State *L)
 {
     int nargs = lua_gettop(L);
     unsigned destaddr = nargs >= 1 ? lua_tounsigned(L, 1) : 0;
+    unsigned orig_destaddr = destaddr;
     unsigned srcaddr  = nargs >= 2 ? lua_tounsigned(L, 2) : 0;
     unsigned len      = nargs >= 3 ? lua_tounsigned(L, 3) : 0x4300;
     destaddr = addr_remap(destaddr);
@@ -1197,17 +1440,20 @@ int reload(lua_State *L)
                 snprintf(full_filename, len, "%s.p8", file_name);
             file_name = full_filename;
         }
-        char *resolved_path = p8_resolve_relative_path(file_name);
+        char *resolved_path = p8_resolve_relative_path(file_name, false);
         free(full_filename);
-        if (!resolved_path)
-            return 0;
-        p8_show_io_icon(true);
+        if (!resolved_path) {
+            lua_pushinteger(L, orig_destaddr);
+            return 1;
+        }
         uint8_t *buffer = NULL;
         src_mem = (uint8_t *)malloc(CART_MEMORY_SIZE);
         if (parse_cart_file(resolved_path, src_mem, NULL, &buffer, NULL) != 0) {
             free(src_mem);
             free(resolved_path);
-            return 0;
+            p8_show_io_icon(false);
+            lua_pushinteger(L, 0);
+            return 1;
         }
         free(buffer);
         free(resolved_path);
@@ -1220,7 +1466,8 @@ int reload(lua_State *L)
         free(src_mem);
         p8_show_io_icon(false);
     }
-    return 0;
+    lua_pushinteger(L, len);
+    return 1;
 }
 
 // ****************************************************************
@@ -1284,11 +1531,18 @@ int rnd(lua_State *L)
 // srand(val)
 int _srand(lua_State *L)
 {
-    unsigned n = lua_tounsigned(L, 1);
+    // Capture the current RNG state as the "previous seed" (lo word is the seed)
+    uint32_t prev_lo = m_memory[MEMORY_RNG_STATE+4] | (m_memory[MEMORY_RNG_STATE+5] << 8) |
+                       (m_memory[MEMORY_RNG_STATE+6] << 16) | (m_memory[MEMORY_RNG_STATE+7] << 24);
+
+    // Use the full 32-bit raw fix32 representation so that srand(0x5b04.17cb)
+    // seeds with 0x5b0417cb, not just the integer part 0x5b04.
+    uint32_t n = (uint32_t)fix32_bits(lua_tonumber(L, 1));
 
     p8_seed_rng_state(n);
 
-    return 0;
+    lua_pushnumber(L, fix32_from_bits(prev_lo));
+    return 1;
 }
 
 // ****************************************************************
@@ -1318,7 +1572,8 @@ int dget(lua_State *L)
 int dset(lua_State *L)
 {
     unsigned index = lua_tounsigned(L, 1);
-    uint32_t value = fix32_bits(lua_tonumber(L, 2));
+    lua_Number val_num = lua_tonumber(L, 2);
+    uint32_t value = fix32_bits(val_num);
 
     m_memory[MEMORY_CARTDATA + index*4] = value;
     m_memory[MEMORY_CARTDATA + index*4 + 1] = value >> 8;
@@ -1327,7 +1582,8 @@ int dset(lua_State *L)
 
     p8_delayed_flush_cartdata();
 
-    return 0;
+    lua_pushnumber(L, val_num);
+    return 1;
 }
 
 // ****************************************************************
@@ -1395,6 +1651,28 @@ int _time(lua_State *L)
 // menuitem(index, [label, callback])
 int menuitem(lua_State *L)
 {
+    int index = luaL_checkinteger(L, 1);
+
+    if (index < 1 || index > MAX_CUSTOM_MENUITEMS)
+        return 0;
+
+    /* menuitem(i) with no label removes the item */
+    if (lua_gettop(L) < 2 || lua_isnil(L, 2)) {
+        p8_menuitem_clear(index);
+        return 0;
+    }
+
+    const char *label = lua_tostring(L, 2); /* may be nil/non-string */
+
+    if (lua_gettop(L) >= 3 && lua_isfunction(L, 3)) {
+        // Full set: update label and callback
+        lua_pushvalue(L, 3);
+        int callback_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+        p8_menuitem_set(index, label ? label : "", callback_ref);
+    } else {
+        // Label-only update: preserve existing callback
+        p8_menuitem_set_label(index, label ? label : "");
+    }
     return 0;
 }
 
@@ -1410,7 +1688,7 @@ int extcmd(lua_State *L)
     } else if (strcmp(cmd, "shutdown") == 0) {
         p8_abort();
     } else {
-        luaL_error(L, "unknown command: %s", cmd);
+        fprintf(stderr, "unsupported extcmd command: %s\n", cmd);
     }
 
     return 0;
@@ -1458,6 +1736,8 @@ int _load(lua_State *L)
         m_breadcrumb = strdup(breadcrumb);
 
     char *full_filename = NULL;
+    char *resolved_path = NULL;
+
     if (strstr(filename, ".p8") == NULL && strstr(filename, ".P8") == NULL) {
         size_t len = strlen(filename) + 4;
         full_filename = (char *)malloc(len);
@@ -1469,28 +1749,35 @@ int _load(lua_State *L)
         filename = full_filename;
     }
 
-    char *resolved_path = p8_resolve_relative_path(filename);
+    resolved_path = p8_resolve_relative_path(filename, false);
 
-    if (full_filename)
+    if (full_filename) {
         free(full_filename);
+    }
 
-    if (!resolved_path)
+    if (!resolved_path) {
         luaL_error(L, "out of memory");
+    }
 
     if (access(resolved_path, F_OK) != 0) {
-        fprintf(stderr, "could not access %s\n", filename);
+        fprintf(stderr, "load: could not find cart %s\n", filename);
         free(resolved_path);
-        return 0;
+        m_load_result = -1;
+        lua_pushboolean(L, -1);
+        lua_pushstring(L, "could not find cart");
+        return 2;
     }
 
     const char *param = NULL;
     if (nargs >= 3)
         param = lua_tostring(L, 3);
 
+    m_load_result = 1;
     p8_load_new(resolved_path, param);
     free(resolved_path);
 
-    return 0;
+    lua_pushboolean(L, 1);
+    return 1;
 }
 
 // ****************************************************************
@@ -1501,19 +1788,43 @@ int _load(lua_State *L)
 // printh(str, [filename], [overwrite])
 int printh(lua_State *L)
 {
-    const char *str = lua_tostring(L, 1);
-    const char *filename = lua_gettop(L) >= 2 ? lua_tostring(L, 2) : NULL;
+    const char *str = NULL;
+    const char *filename = NULL;
+    bool overwrite = false;
 
-    if (filename && strcmp(filename, "@clip") == 0)
-    {
+    if (lua_gettop(L) >= 1)
+        str = lua_tostring(L, 1);
+    if (lua_gettop(L) >= 2)
+        filename = lua_tostring(L, 2);
+    if (lua_gettop(L) >= 3)
+        overwrite = lua_toboolean(L, 3);
+
+    if (!str) str = "";
+
+    if (filename && strcmp(filename, "@clip") == 0) {
         free(m_clipboard);
-        m_clipboard = strdup(str ? str : "");
+        m_clipboard = strdup(str);
+        lua_pushboolean(L, 1);
+        return 1;
     }
 
-    printf("%s\r\n", str);
-    fflush(stdout);
+    FILE *f = NULL;
+    if (!filename) {
+        f = stdout;
+    } else {
+        f = fopen(filename, overwrite ? "w" : "a");
+        if (!f) {
+            lua_pushboolean(L, 0);
+            return 1;
+        }
+    }
 
-    return 0;
+    fprintf(f, "%s\n", str);
+    if (f != stdout)
+        fclose(f);
+
+    lua_pushboolean(L, 1);
+    return 1;
 }
 
 // stat(n)
@@ -1558,7 +1869,7 @@ int _stat(lua_State *L)
         lua_pushstring(L, m_param_string);
         break;
     case STAT_FRAMERATE:
-        lua_pushinteger(L, m_actual_fps);
+        lua_pushinteger(L, m_fps);
         break;
     case STAT_TARGET_FRAMERATE:
         lua_pushinteger(L, m_fps);
@@ -1687,6 +1998,9 @@ int _stat(lua_State *L)
     case STAT_BBS_CART_ID:
         lua_pushstring(L, "");
         break;
+    case STAT_LOAD_RESULT:
+        lua_pushinteger(L, m_load_result);
+        break;
     case STAT_CURRENT_PATH:
         if (current_cart_dir)
             lua_pushstring(L, current_cart_dir);
@@ -1707,8 +2021,55 @@ int _stat(lua_State *L)
     return 1;
 }
 
-// stop() (undocumented)
-// trace() (undocumented)
+// stop([message,] [x,] [y,] [col])
+int _stop(lua_State *L)
+{
+    int nargs = lua_gettop(L);
+    if (nargs >= 1 && !lua_isnil(L, 1)) {
+        size_t len;
+        const char *str = lua_tolstring(L, 1, &len);
+        if (str) {
+            if (nargs >= 3) {
+                int x = lua_tointeger(L, 2);
+                int y = lua_tointeger(L, 3);
+                int col = nargs >= 4 ? lua_tointeger(L, 4) : pencolor_get();
+                int right;
+                draw_text(str, len, x, y, col, x, false, NULL, NULL, &right);
+            } else {
+                int x, y;
+                cursor_get(&x, &y);
+                int col = nargs >= 2 ? lua_tointeger(L, 2) : pencolor_get();
+                int right;
+                draw_text(str, len, x, y, col, left_margin_get(), (m_memory[MEMORY_MISCFLAGS] & 0x4) == 0, &x, &y, &right);
+                cursor_set(x, y, -1);
+                if ((m_memory[MEMORY_MISCFLAGS] & 0x40) == 0)
+                    scroll();
+            }
+            p8_render();
+        }
+    }
+    p8_abort();
+}
+
+// trace([coroutine,] [message,] [skip])
+// Returns a description of the current call stack as a string.
+// Mirrors debug.traceback() with PICO-8's default skip of 1.
+int _trace(lua_State *L)
+{
+    int arg = 0;
+    lua_State *L1 = L;
+
+    if (lua_isthread(L, 1)) {
+        L1 = lua_tothread(L, 1);
+        arg = 1;
+    }
+
+    const char *msg = lua_isnoneornil(L, arg + 1) ? NULL : lua_tostring(L, arg + 1);
+    int level = lua_isnoneornil(L, arg + 2) ? 1 : lua_tointeger(L, arg + 2);
+
+    luaL_traceback(L, L1, msg, level);
+    return 1;
+}
 
 // ****************************************************************
 // *** Misc ***
@@ -1761,10 +2122,40 @@ int note_to_hz(lua_State *L)
 int serial(lua_State *L)
 {
     int channel = lua_tointeger(L, 1);
-    uint32_t address = lua_tounsigned(L, 2);
+    uint32_t address = addr_remap(lua_tounsigned(L, 2));
     uint32_t length = lua_gettop(L) >= 3 ? lua_tounsigned(L, 3) : 1;
+    if (length < 0)
+        length = 0;
 
     switch (channel) {
+    case 0x0ff: {
+        usleep(length);
+        break;
+    }
+    case 0x804: {
+        if (address >= MEMORY_SIZE)
+            length = 0;
+        else if (length > MEMORY_SIZE - address)
+            length = MEMORY_SIZE - address;
+
+        if (length > 0) {
+            size_t bytes_read = fread(m_memory + address, 1, length, stdin);
+            (void)bytes_read;
+        }
+        break;
+    }
+    case 0x805: {
+        if (address >= MEMORY_SIZE)
+            length = 0;
+        else if (length > MEMORY_SIZE - address)
+            length = MEMORY_SIZE - address;
+
+        if (length > 0)
+            fwrite(m_memory + address, 1, length, stdout);
+
+        fflush(stdout);
+        break;
+    }
     case 0x808:
         // PCM audio output
 #ifdef ENABLE_AUDIO
@@ -1791,6 +2182,7 @@ void lua_register_functions(lua_State *L)
     lua_register(L, "fget", fget);
     lua_register(L, "fillp", fillp);
     lua_register(L, "flip", flip);
+    lua_register(L, "holdframe", holdframe);
     lua_register(L, "fset", fset);
     lua_register(L, "line", line);
     lua_register(L, "oval", oval);
@@ -1823,6 +2215,7 @@ void lua_register_functions(lua_State *L)
     // ****************************************************************
     lua_register(L, "btn", btn);
     lua_register(L, "btnp", btnp);
+    lua_register(L, "_update_buttons", _update_buttons);
     // ****************************************************************
     // *** Sound ***
     // ****************************************************************
@@ -1910,14 +2303,15 @@ void lua_register_functions(lua_State *L)
     lua_register(L, "reset", reset);
     lua_register(L, "run", run);
     lua_register(L, "serial", serial);
+    lua_register(L, "_set_fps", set_fps);
     // ****************************************************************
     // *** Debugging ***
     // ****************************************************************
     // lua_register(L, "assert", assert);
     lua_register(L, "printh", printh);
     lua_register(L, "stat", _stat);
-    // lua_register(L, "stop", stop);
-    // lua_register(L, "trace, trace);
+    lua_register(L, "stop", _stop);
+    lua_register(L, "trace", _trace);
     // ****************************************************************
     // *** Misc ***
     // ****************************************************************
@@ -1932,7 +2326,7 @@ void lua_register_functions(lua_State *L)
     lua_pushinteger(L, 4); lua_setglobal(L, "\x8e");  // 142 🅾️ O/Z
     lua_pushinteger(L, 5); lua_setglobal(L, "\x97");  // 151 ❎ X
 
-    lua_pushnumber(L, fix32_from_bits(0x00000000)); lua_setglobal(L, "\x80");  // 128 █
+    lua_pushnumber(L, fix32_from_bits(0x00008000)); lua_setglobal(L, "\x80");  // 128 █
     lua_pushnumber(L, fix32_from_bits(0x5a5a8000)); lua_setglobal(L, "\x81");  // 129 ▒
     lua_pushnumber(L, fix32_from_bits(0x511f8000)); lua_setglobal(L, "\x82");  // 130 🐱
     lua_pushnumber(L, fix32_from_bits(0x7d7d8000)); lua_setglobal(L, "\x84");  // 132 ░
@@ -1984,6 +2378,7 @@ void lua_load_api()
 void lua_shutdown_api()
 {
     if (L) {
+        p8_menuitem_reset_all();
         lua_close(L);
         L = NULL;
     }
@@ -2022,11 +2417,11 @@ void lua_print_error(const char *where)
     {
         const char *message = lua_tostring(L, -1);
         printf("%s\r\n", message);
-        // Extract line number from error string like "...[string ...]:1292:"
+        // Extract line number from error string like "...:1292:"
         const char *colon = message;
         int lineno = 0;
         while (*colon) {
-            if (*colon == ']' && *(colon+1) == ':') {
+            if (*colon != ']' && *(colon+1) == ':') {
                 lineno = atoi(colon + 2);
                 if (lineno > 0) break;
             }
@@ -2038,9 +2433,6 @@ void lua_print_error(const char *where)
 
 void lua_init_script(const char *file_name, const char *script)
 {
-    free(s_saved_script);
-    s_saved_script = script ? strdup(script) : NULL;
-
     if (!L)
         L = luaL_newstate();
 
@@ -2056,9 +2448,12 @@ void lua_init_script(const char *file_name, const char *script)
     padded_script[0] = padded_script[1] = padded_script[2] = '\n';
     memcpy(padded_script + 3, script, script_len + 1);
     int ret = luaL_loadbuffer(L, padded_script, 3 + script_len, temp_file_name);
-    free(padded_script);
+    free(s_saved_script);
+    s_saved_script = padded_script;
 #else
     int ret = lua_loadBuffer(L, script, strlen(script), temp_file_name);
+    free(s_saved_script);
+    s_saved_script = script;
 #endif
     free(temp_file_name);
     if (ret)

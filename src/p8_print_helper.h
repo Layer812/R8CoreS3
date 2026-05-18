@@ -187,11 +187,14 @@ static inline void draw_text(const char *str, unsigned str_len, int x, int y, in
 {
     int right = x;
     int repeat = 1;
-    int bg = -1;
+    int bg = 0;
     int fg = col;
     int tab_width = 16;
     int wrap_boundary = 128;
     bool wrap_enabled = m_memory[MEMORY_MISCFLAGS] & 0x80;
+    int last_advance = GLYPH_WIDTH;
+    int home_x = x;
+    int home_y = y;
 
     uint8_t text_attrs = m_memory[MEMORY_TEXT_ATTRS];
     bool use_defaults = (text_attrs & 0x1) != 0;
@@ -256,7 +259,10 @@ static inline void draw_text(const char *str, unsigned str_len, int x, int y, in
                     break;
                 case 2: // "\#"
                     if (i + 1 < str_len)
+                    {
                         bg = hexy(str[++i]);
+                        state.solid_bg = true;
+                    }
                     break;
                 case 3: // "\-"
                     if (i + 1 < str_len)
@@ -291,6 +297,8 @@ static inline void draw_text(const char *str, unsigned str_len, int x, int y, in
                                 clear_screen(clear_col);
                                 x = 0;
                                 y = 0;
+                                home_x = 0;
+                                home_y = 0;
                                 left_margin = 0;
                             }
                             break;
@@ -300,8 +308,12 @@ static inline void draw_text(const char *str, unsigned str_len, int x, int y, in
                             }
                             break;
                         case 'g':
+                            x = home_x;
+                            y = home_y;
                             break;
                         case 'h':
+                            home_x = x;
+                            home_y = y;
                             break;
                         case 'j':
                             if (i + 2 < str_len) {
@@ -369,7 +381,9 @@ static inline void draw_text(const char *str, unsigned str_len, int x, int y, in
                                     break;
                                 case 'i': state.invert = false; break;
                                 case 'b': state.border = !state.border; break;
-                                case '#': state.solid_bg = false; break;
+                                case '#':
+                                    state.solid_bg = false;
+                                    break;
                                 }
                             }
                             break;
@@ -385,13 +399,13 @@ static inline void draw_text(const char *str, unsigned str_len, int x, int y, in
                                     for (int bit = 0; bit < 8; bit++) {
                                         if (byte & (1 << bit)) {
                                             pixel_set(draw_x + bit, draw_y + row, fg, 0, DRAWTYPE_DEFAULT);
-                                        } else if (bg != -1 || state.solid_bg) {
-                                            int draw_bg = state.solid_bg ? (bg != -1 ? bg : 0) : bg;
-                                            pixel_set(draw_x + bit, draw_y + row, draw_bg, 0, DRAWTYPE_DEFAULT);
+                                        } else if (state.solid_bg) {
+                                            pixel_set(draw_x + bit, draw_y + row, bg, 0, DRAWTYPE_DEFAULT);
                                         }
                                     }
                                 }
                                 x += 8;
+                                last_advance = 8;
                             }
                             break;
                         case ':':
@@ -406,14 +420,46 @@ static inline void draw_text(const char *str, unsigned str_len, int x, int y, in
                                     for (int bit = 0; bit < 8; bit++) {
                                         if (byte & (1 << bit)) {
                                             pixel_set(draw_x + bit, draw_y + row, fg, 0, DRAWTYPE_DEFAULT);
-                                        } else if (bg != -1 || state.solid_bg) {
-                                            int draw_bg = state.solid_bg ? (bg != -1 ? bg : 0) : bg;
-                                            pixel_set(draw_x + bit, draw_y + row, draw_bg, 0, DRAWTYPE_DEFAULT);
+                                        } else if (state.solid_bg) {
+                                            pixel_set(draw_x + bit, draw_y + row, bg, 0, DRAWTYPE_DEFAULT);
                                         }
                                     }
                                 }
                                 i += 16;
                                 x += 8;
+                                last_advance = 8;
+                            }
+                            break;
+                        case '@':
+                            // \^@addrnnnn[data] — poke nnnn bytes to address addr
+                            // addr and nnnn are 4 hex chars each
+                            if (i + 8 < str_len) {
+                                int addr  = (hexy(str[i+1]) << 12) | (hexy(str[i+2]) << 8) |
+                                            (hexy(str[i+3]) <<  4) |  hexy(str[i+4]);
+                                int count = (hexy(str[i+5]) << 12) | (hexy(str[i+6]) << 8) |
+                                            (hexy(str[i+7]) <<  4) |  hexy(str[i+8]);
+                                i += 8;
+                                for (int k = 0; k < count && i + 1 < str_len; k++) {
+                                    uint8_t byte = str[++i];
+                                    if ((unsigned)(addr + k) < MEMORY_SIZE)
+                                        m_memory[addr + k] = byte;
+                                }
+                            }
+                            break;
+                        case '!':
+                            // \^!addr[data] — poke all remaining characters to address addr
+                            // addr is 4 hex chars; remaining string bytes are data (not printed)
+                            if (i + 4 < str_len) {
+                                int addr = (hexy(str[i+1]) << 12) | (hexy(str[i+2]) << 8) |
+                                           (hexy(str[i+3]) <<  4) |  hexy(str[i+4]);
+                                i += 4;
+                                int k = 0;
+                                while (i + 1 < str_len) {
+                                    uint8_t byte = str[++i];
+                                    if ((unsigned)(addr + k) < MEMORY_SIZE)
+                                        m_memory[addr + k] = byte;
+                                    k++;
+                                }
                             }
                             break;
                         case 'o':
@@ -457,7 +503,7 @@ static inline void draw_text(const char *str, unsigned str_len, int x, int y, in
                     }
                     break;
                 case 8: // "\b"
-                    x -= state.char_w;
+                    x -= last_advance;
                     break;
                 case 9: // "\t"
                     x = ((x / tab_width) + 1) * tab_width;
@@ -477,7 +523,7 @@ static inline void draw_text(const char *str, unsigned str_len, int x, int y, in
                         int save_x = x;
                         int save_y = y;
 
-                        int dec_x = save_x - state.char_w * (state.wide ? 2 : 1) + offset_x;
+                        int dec_x = save_x - last_advance + offset_x;
                         int dec_y = save_y + offset_y;
 
                         uint8_t symbol_length = 0;
@@ -540,7 +586,7 @@ static inline void draw_text(const char *str, unsigned str_len, int x, int y, in
 
                     bool use_styled = state.wide || state.tall || state.invert || !state.border || state.outline_enabled || state.use_custom_font || (state.char_w != GLYPH_WIDTH) || (state.char_w2 != GLYPH_WIDTH) || (state.char_h != GLYPH_HEIGHT);
 
-                    int draw_bg = state.solid_bg ? (bg != -1 ? bg : 0) : bg;
+                    int draw_bg = state.solid_bg ? bg : -1;
                     if (use_styled) {
                         draw_char_styled(index, x, y, fg, draw_bg, &state);
                     } else if (draw_bg != -1) {
@@ -552,6 +598,7 @@ static inline void draw_text(const char *str, unsigned str_len, int x, int y, in
                     }
 
                     x += char_width;
+                    last_advance = char_width;
 
                     for (int f = 0; f < state.delay_frames; f++) {
                         p8_flip();
