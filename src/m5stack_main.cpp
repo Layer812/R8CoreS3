@@ -1,4 +1,8 @@
 #include <Arduino.h>
+/*
+ * Created by Layer8
+ * M5Stack Cardputer entry point and hardware abstraction layer for RONTO8.
+ */
 #include <M5Cardputer.h>
 #include <SPI.h>
 #include <SD.h>

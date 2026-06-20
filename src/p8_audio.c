@@ -11,6 +11,12 @@
 #include <string.h>
 #include <math.h>
 #include <pthread.h>
+/*
+ * Modified by Layer8
+ * - Fixed channel_mask logic for music() so BGM plays correctly.
+ * - Fixed sfx() channel auto-assignment to overwrite oldest sound when full.
+ * - Added WAVEFORM_PHASER basic approximation.
+ */
 #include "p8_audio.h"
 #include "p8_dsp.h"
 #include "p8_emu.h"

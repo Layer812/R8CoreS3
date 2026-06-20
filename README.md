@@ -1,10 +1,17 @@
-# RONTO8 for M5Cardputer
+# RONTO8 for M5Cardputer (v0.4)
 
 ![RONTO8 Logo](/images/screenshot1.png)
 
-RONTO8 is a PICO-8 compatible fantasy console emulator specially designed and optimized for the **M5Stack Cardputer**. It is based on [femto8](https://github.com/benbaker76/femto8), bringing the joy of portable PICO-8 gaming and coding to this compact, ESP32-S3-powered device.
+RONTO8 is an experimental PICO-8 compatible fantasy console emulator specially designed and optimized for the **M5Stack Cardputer**. It is based on [femto8](https://github.com/benbaker76/femto8) and [zepto8](https://github.com/samhocevar/zepto8), bringing the joy of portable PICO-8 gaming and coding to this compact, ESP32-S3-powered device.
 
-RONTO8は、**M5Stack Cardputer** 専用に設計および最適化された PICO-8 互換のファンタジーコンソールエミュレータです。[femto8](https://github.com/benbaker76/femto8) をベースにしており、ESP32-S3を搭載したこのコンパクトなデバイスで、PICO-8のゲームやコーディングの楽しさを持ち歩くことができます。
+RONTO8は、**M5Stack Cardputer** 専用に設計および最適化された PICO-8 互換のファンタジーコンソールエミュレータ（実験バージョン）です。[femto8](https://github.com/benbaker76/femto8) と [zepto8](https://github.com/samhocevar/zepto8) をベースにしており、ESP32-S3を搭載したこのコンパクトなデバイスで、PICO-8のゲームやコーディングの楽しさを持ち歩くことができます。
+
+---
+
+## ⚠️ Disclaimer / 注意事項
+
+- **Experimental Release / 実験的なリリース**: This is highly experimental code. If you find bugs, please report them gently! (実験的なコードであるため、バグを見つけた場合は優しく教えてください！)
+- **Memory Limitations / メモリ制限**: Due to the hardware limitations of the M5Cardputer (ESP32-S3), some very large PICO-8 cartridges may not work or may cause "not enough memory" errors during Lua compilation. (Cardputerのハードウェア制限により、非常に大きいカートリッジは動作しないか、コンパイル時にメモリ不足エラーになる場合があります。)
 
 ---
 
@@ -52,5 +59,7 @@ RONTO8 is heavily based on the incredible work of the open-source community:
 - [benbaker76](https://github.com/benbaker76) - Original author and maintainer of [femto8](https://github.com/benbaker76/femto8)
 - [Jacopo Santoni](https://github.com/Jakz) - Author of [retro8](https://github.com/Jakz/retro8)
 - [Lexaloffle](https://www.lexaloffle.com/) - The visionary creator of the amazing PICO-8 fantasy console.
+- **Layer8** - M5Cardputer Port, Audio engine fixes, and memory optimization.
+- **Share Code**: pgrbeoPrOeXVnea8
 
-*(C) 2026 RONTO8. BASED ON FEMTO8 & ZEPTO8.*
+*(C) 2026 Layer8. BASED ON FEMTO8 & ZEPTO8.*

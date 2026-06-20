@@ -9,6 +9,10 @@
 #include <stdlib.h>
 #include <time.h>
 #include "p8_audio.h"
+/*
+ * Modified by Layer8
+ * - Rewrote dsp_noise to respect frequency (pitch) to reproduce crunchy drum sounds.
+ */
 #include "p8_dsp.h"
 
 int random_range(int min, int max)

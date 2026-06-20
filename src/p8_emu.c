@@ -11,6 +11,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
+/*
+ * Modified by Layer8
+ * - Restored memset for m_memory on init to prevent dirty heap state.
+ */
 #include <string.h>
 #include <unistd.h>
 #include <math.h>
