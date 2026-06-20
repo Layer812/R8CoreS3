@@ -2,3 +2,7 @@ build
 build-linux
 build-windows
 build-mac
+.pio/
+.vscode/
+*.BAK
+SDL-1.2/

@@ -603,14 +603,22 @@ static void close_func (LexState *ls) {
   leaveblock(fs);
   luaM_reallocvector(L, f->code, f->sizecode, fs->pc, Instruction);
   f->sizecode = fs->pc;
+#ifndef OS_FREERTOS
   luaM_reallocvector(L, f->lineinfo, f->sizelineinfo, fs->pc, int);
   f->sizelineinfo = fs->pc;
+#endif
   luaM_reallocvector(L, f->k, f->sizek, fs->nk, TValue);
   f->sizek = fs->nk;
   luaM_reallocvector(L, f->p, f->sizep, fs->np, Proto *);
   f->sizep = fs->np;
+#ifndef OS_FREERTOS
   luaM_reallocvector(L, f->locvars, f->sizelocvars, fs->nlocvars, LocVar);
   f->sizelocvars = fs->nlocvars;
+#else
+  luaM_freearray(L, f->locvars, f->sizelocvars);
+  f->locvars = NULL;
+  f->sizelocvars = 0;
+#endif
   luaM_reallocvector(L, f->upvalues, f->sizeupvalues, fs->nups, Upvaldesc);
   f->sizeupvalues = fs->nups;
   lua_assert(fs->bl == NULL);

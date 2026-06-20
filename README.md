@@ -1,37 +1,56 @@
-# femto8
+# RONTO8 for M5Cardputer
 
-femto8 is an open-source reimplementation of the [PICO-8](https://www.lexaloffle.com/pico-8.php) fantasy console, designed specifically for embedded systems with smaller CPUs and less memory. It provides a platform to play PICO-8 games on devices with resource constraints, making it ideal for environments with limited hardware capabilities.
+![RONTO8 Logo](/images/screenshot1.png)
 
-## Acknowledgment
+RONTO8 is a PICO-8 compatible fantasy console emulator specially designed and optimized for the **M5Stack Cardputer**. It is based on [femto8](https://github.com/benbaker76/femto8), bringing the joy of portable PICO-8 gaming and coding to this compact, ESP32-S3-powered device.
 
-This project has been significantly influenced by the work of [Jacopo Santoni](https://github.com/Jakz) on [retro8](https://github.com/Jakz/retro8), a PICO-8 emulator designed for desktop platforms. We would like to express our gratitude to Jacopo Santoni for his contributions and efforts on retro8, which has been an invaluable resource for the development of femto8.
+RONTO8は、**M5Stack Cardputer** 専用に設計および最適化された PICO-8 互換のファンタジーコンソールエミュレータです。[femto8](https://github.com/benbaker76/femto8) をベースにしており、ESP32-S3を搭載したこのコンパクトなデバイスで、PICO-8のゲームやコーディングの楽しさを持ち歩くことができます。
 
-## Key Features
+---
 
-- Written in C for optimal performance on embedded systems.
-- Compact and resource-efficient design, suitable for devices with smaller CPUs and limited memory.
+## 🌟 Key Features / 主な機能
 
-## Screenshots
+- **Optimized for M5Cardputer**: Full support for the Cardputer's display, keyboard, and speaker.
+  - Cardputerのディスプレイ、キーボード、スピーカーに完全対応。
+- **SD Card ROM Browser**: Load `.p8.png` or `.p8` cartridges directly from the SD card.
+  - SDカードから `.p8.png` や `.p8` 形式のカートリッジを直接ロード可能。
+- **High-speed Emulation**: Tuned Lua compiler and garbage collector to overcome memory limitations of embedded systems.
+  - 組み込み環境のメモリ制限を克服するため、Luaコンパイラとガベージコレクションを徹底的にチューニング。
+- **Audio Support**: Enhanced audio synthesis for authentic PICO-8 SFX and Music playback.
+  - PICO-8特有の効果音（SFX）やBGMを再現するオーディオエンジンを搭載。
 
-![](/images/screenshot1.png)
+## 🎮 Controls / 操作方法
 
-![](/images/screenshot2.png)
+- **D-Pad / 方向キー**: `W`, `A`, `S`, `D`
+- **Button O (Z/C)**: `Z` or `N`
+- **Button X (X/V)**: `X` or `M`
+- **Start / Pause**: `P` or `ENTER`
 
-![](/images/screenshot3.png)
+**In the ROM Browser / ROMブラウザでの操作**:
+- **Up**: `W` or `;`
+- **Down**: `S` or `.`
+- **Select / Open Folder**: `ENTER`
 
-## Building
+## ⚙️ Setup & Building / ビルド方法
 
-To build femto8:
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/benbaker76/femto8.git ronto8
+   cd ronto8
+   ```
+2. Build and upload using PlatformIO:
+   ```bash
+   pio run --target upload ; pio device monitor
+   ```
+3. Prepare the SD Card:
+   Place your `.p8.png` or `.p8` files on the root or in a folder on your MicroSD card and insert it into the Cardputer.
+   - MicroSDカードのルートやフォルダ内に `.p8.png` または `.p8` ファイルを置き、Cardputerに挿入してください。
 
-1. Clone the repository: `git clone https://github.com/benbaker76/femto8.git`
-2. Navigate to the femto8 directory: `cd femto8`
-3. Download SDL: `git submodule update --init`
-3. Configure SDL: `cd SDL-1.2 && ./configure && cd ..`
-4. Build a local binary: `make`
+## 🙏 Credits and Acknowledgments / 謝辞
 
-## Credits
-
-- [benbaker76](https://github.com/benbaker76) - Author and maintainer of [femto8](https://github.com/benbaker76/femto8)
+RONTO8 is heavily based on the incredible work of the open-source community:
+- [benbaker76](https://github.com/benbaker76) - Original author and maintainer of [femto8](https://github.com/benbaker76/femto8)
 - [Jacopo Santoni](https://github.com/Jakz) - Author of [retro8](https://github.com/Jakz/retro8)
-- [Lexaloffle](https://www.lexaloffle.com/) - Creator of PICO-8
-- [atomice1](https://github.com/atomice1) - For updates and improvements
+- [Lexaloffle](https://www.lexaloffle.com/) - The visionary creator of the amazing PICO-8 fantasy console.
+
+*(C) 2026 RONTO8. BASED ON FEMTO8 & ZEPTO8.*

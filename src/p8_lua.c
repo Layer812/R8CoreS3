@@ -1008,11 +1008,32 @@ int btnp(lua_State *L)
 int music(lua_State *L)
 {
 #ifdef ENABLE_AUDIO
-    int prev = audio_stat(54);  // stat(54) = current music pattern, -1 if none
+    int prev = audio_stat(54);
 
-    int n = lua_tointeger(L, 1);
+    int n = lua_gettop(L) >= 1 ? lua_tointeger(L, 1) : -1;
     int fadems = lua_to_or_default(L, integer, 2, 1);
     int channelmask = lua_to_or_default(L, integer, 3, 0);
+
+    static int s_active_music = -1;
+    static unsigned s_last_play_time = 0;
+    extern unsigned m_frames;
+
+    // オーディオが自然に停止した（prev == -1）場合のみ状態をリセットする。
+    // ※別スレッドでオーディオを処理しているため、再生命令を出した直後のラグで
+    // -1 が返ってくるのを防ぐため、数フレームの猶予（ここでは5）を持たせます。
+    if (prev == -1 && (m_frames - s_last_play_time > 5)) {
+        s_active_music = -1;
+    }
+
+    // 要求されたトラックがすでに再生中として記録されていれば、何もしないで無視
+    if (n != -1 && n == s_active_music) {
+        lua_pushinteger(L, prev);
+        return 1;
+    }
+
+    // 新しいトラックを記録してキューに送信
+    s_active_music = n;
+    if (n != -1) s_last_play_time = m_frames;
 
     audio_music(n, fadems, channelmask);
 
@@ -1235,11 +1256,11 @@ int cstore(lua_State *L)
     // Patch the requested region from runtime memory
     memcpy(work_mem + destaddr, m_memory + srcaddr, len);
 
-    // Also update m_cart_memory when writing to the current cart
-    if (nargs < 4 || lua_isnil(L, 4))
-        memcpy(m_cart_memory + destaddr, m_memory + srcaddr, len);
-
-    write_cart_p8(resolved_path, existing_lua ? existing_lua : "", work_mem);
+    // m_cart_memory has been removed to save RAM. cstore() only writes to current memory if dest == source.
+    // If we wanted to persist to SD, we would need to implement it here.
+    if (len > 0 && destaddr != srcaddr) {
+        memcpy(m_memory + destaddr, m_memory + srcaddr, len);
+    } write_cart_p8(resolved_path, existing_lua ? existing_lua : "", work_mem);
 
     free(work_mem);
     free(file_buffer);
@@ -1264,13 +1285,13 @@ int _memcpy(lua_State *L)
         return 1;
     }
 
-    if (sourceaddr < 0 || (sourceaddr + len) > (1 << 16))
+    if (sourceaddr >= 0x8000 || (sourceaddr + len) > 0x8000)
     {
         lua_pushinteger(L, orig_destaddr);
         return 1;
     }
 
-    if (destaddr < 0 || (destaddr + len) > (1 << 16))
+    if (destaddr >= 0x8000 || (destaddr + len) > 0x8000)
     {
         lua_pushinteger(L, orig_destaddr);
         return 1;
@@ -1297,6 +1318,10 @@ int _memset(lua_State *L)
     int val = lua_tointeger(L, 2);
     unsigned len = lua_tounsigned(L, 3);
 
+    if (destaddr >= 0x8000 || destaddr + len > 0x8000) {
+        return 0;
+    }
+
     while (len > 0) {
         unsigned chunk = MIN(len, 0x2000 - (destaddr & 0x1fff));
         unsigned destaddr1 = addr_remap(destaddr);
@@ -1318,8 +1343,12 @@ int peek(lua_State *L)
 
     luaL_checkstack(L, n, "too many values");
 
-    for (unsigned i=0;i<n;++i)
-        lua_pushinteger(L, m_memory[addr+i]);
+    for (unsigned i=0;i<n;++i) {
+        if (addr + i >= 0x8000)
+            lua_pushinteger(L, 0);
+        else
+            lua_pushinteger(L, m_memory[addr+i]);
+    }
 
     return n;
 }
@@ -1334,8 +1363,12 @@ int peek2(lua_State *L)
 
     luaL_checkstack(L, n, "too many values");
 
-    for (unsigned i=0;i<n;++i)
-        lua_pushinteger(L, (m_memory[addr + i*2 + 1] << 8) | (m_memory[addr + i*2]));
+    for (unsigned i=0;i<n;++i) {
+        if (addr + i*2 + 1 >= 0x8000)
+            lua_pushinteger(L, 0);
+        else
+            lua_pushinteger(L, (m_memory[addr + i*2 + 1] << 8) | (m_memory[addr + i*2]));
+    }
 
     return n;
 }
@@ -1350,8 +1383,12 @@ int peek4(lua_State *L)
 
     luaL_checkstack(L, n, "too many values");
 
-    for (unsigned i=0;i<n;++i)
-        lua_pushnumber(L, fix32_from_bits((m_memory[addr + i*4 + 3] << 24) | (m_memory[addr + i*4 + 2] << 16) | (m_memory[addr + i*4 + 1] << 8) | m_memory[addr + i*4]));
+    for (unsigned i=0;i<n;++i) {
+        if (addr + i*4 + 3 >= 0x8000)
+            lua_pushinteger(L, 0);
+        else
+            lua_pushnumber(L, fix32_from_bits((m_memory[addr + i*4 + 3] << 24) | (m_memory[addr + i*4 + 2] << 16) | (m_memory[addr + i*4 + 1] << 8) | m_memory[addr + i*4]));
+    }
 
     return n;
 }
@@ -1366,7 +1403,8 @@ int poke(lua_State *L)
     for (int i=2;i<=lua_gettop(L);++i) {
         unsigned val = lua_tounsigned(L, i);
 
-        m_memory[addr + i-2] = val;
+        if (addr + i - 2 < 0x8000)
+            m_memory[addr + i-2] = val;
     }
 
     if (addr >= MEMORY_CARTDATA && addr + 1 <= MEMORY_CARTDATA + MEMORY_CARTDATA_SIZE)
@@ -1386,8 +1424,10 @@ int poke2(lua_State *L)
     for (int i=2;i<=lua_gettop(L);++i) {
         unsigned val = lua_tounsigned(L, i);
 
-        m_memory[addr + (i-2)*2] = val;
-        m_memory[addr + (i-2)*2 + 1] = val >> 8;
+        if (addr + (i - 2) * 2 + 1 < 0x8000) {
+            m_memory[addr + (i-2)*2] = val;
+            m_memory[addr + (i-2)*2 + 1] = val >> 8;
+        }
     }
 
     if (addr >= MEMORY_CARTDATA && addr + 2 <= MEMORY_CARTDATA + MEMORY_CARTDATA_SIZE)
@@ -1407,10 +1447,12 @@ int poke4(lua_State *L)
     for (int i=2;i<=lua_gettop(L);++i) {
         uint32_t val = lua_tonumber(L, i);
 
-        m_memory[addr + (i-2)*4] = val;
-        m_memory[addr + (i-2)*4 + 1] = val >> 8;
-        m_memory[addr + (i-2)*4 + 2] = val >> 16;
-        m_memory[addr + (i-2)*4 + 3] = val >> 24;
+        if (addr + (i - 2) * 4 + 3 < 0x8000) {
+            m_memory[addr + (i-2)*4] = val;
+            m_memory[addr + (i-2)*4 + 1] = val >> 8;
+            m_memory[addr + (i-2)*4 + 2] = val >> 16;
+            m_memory[addr + (i-2)*4 + 3] = val >> 24;
+        }
     }
 
     if (addr >= MEMORY_CARTDATA && addr + 4 <= MEMORY_CARTDATA + MEMORY_CARTDATA_SIZE)
@@ -1458,7 +1500,7 @@ int reload(lua_State *L)
         free(buffer);
         free(resolved_path);
     } else {
-        src_mem = m_cart_memory;
+        src_mem = m_memory;
     }
     if (destaddr >= 0 && destaddr + len <= 0x10000 && srcaddr >= 0 && srcaddr + len <= CART_MEMORY_SIZE)
         memcpy(m_memory + destaddr, src_mem + srcaddr, len);
@@ -2361,6 +2403,11 @@ void lua_load_api()
     {
         L = luaL_newstate();
     }
+    
+    if (!L) {
+        printf("FATAL: luaL_newstate failed in lua_load_api! Out of memory.\r\n");
+        return;
+    }
 
     luaL_openlibs(L);
 
@@ -2436,10 +2483,26 @@ void lua_init_script(const char *file_name, const char *script)
     if (!L)
         L = luaL_newstate();
 
+    if (!L) {
+        printf("FATAL: luaL_newstate failed! Out of memory.\r\n");
+        return;
+    }
+
     char *temp_file_name = malloc(strlen(file_name) + 2);
     temp_file_name[0] = '@';
     strcpy(temp_file_name + 1, file_name);
-#if 1
+    // --- MEMORY BREATHING: Suspend large buffers before compiling ---
+    extern void p8_suspend_memory_for_lua_compile(void);
+    extern void p8_resume_memory_after_lua_compile(void);
+    extern void m5stack_suspend_frame_buf(void);
+    extern void m5stack_resume_frame_buf(void);
+
+#ifdef OS_FREERTOS
+    p8_suspend_memory_for_lua_compile();
+    m5stack_suspend_frame_buf();
+#endif
+
+#ifndef OS_FREERTOS
     // Prepend newlines so Lua's line numbers match the original .p8 file.
     // The Lua section starts at line 4 (after the 3-line pico-8 header), so
     // prepend 3 newlines to make line 1 of the script appear as line 4.
@@ -2451,10 +2514,26 @@ void lua_init_script(const char *file_name, const char *script)
     free(s_saved_script);
     s_saved_script = padded_script;
 #else
-    int ret = lua_loadBuffer(L, script, strlen(script), temp_file_name);
-    free(s_saved_script);
-    s_saved_script = script;
+    size_t script_len = strlen(script);
+    int ret = luaL_loadbuffer(L, script, script_len, temp_file_name);
+    if (s_saved_script) {
+        free(s_saved_script);
+        s_saved_script = NULL;
+    }
 #endif
+    
+    // --- MEMORY BREATHING: Resume large buffers after compiling ---
+#ifdef OS_FREERTOS
+    // Force garbage collection to clean up parser's temporary strings and structures
+    // BEFORE we try to allocate the 32KB frame_buf and m_memory again!
+    lua_gc(L, LUA_GCCOLLECT, 0);
+
+    m5stack_resume_frame_buf();
+    p8_resume_memory_after_lua_compile();
+#else
+    p8_resume_memory_after_lua_compile(); // for memcpy logic
+#endif
+
     free(temp_file_name);
     if (ret)
     {
@@ -2462,10 +2541,20 @@ void lua_init_script(const char *file_name, const char *script)
         return;
     }
 
+    // Memory initialization is already handled in p8_init_common now.
+
     int error = lua_pcall(L, 0, 0, 0);
 
     if (error)
         lua_print_error("lua_pcall on init");
+        
+    // Force garbage collection after compilation and main chunk execution
+    // to reclaim parser/AST memory before the game starts running.
+    lua_gc(L, LUA_GCCOLLECT, 0);
+
+    // Tune GC for low memory environment to prevent fragmentation
+    lua_gc(L, LUA_GCSETPAUSE, 100);    // Start GC immediately after a cycle
+    lua_gc(L, LUA_GCSETSTEPMUL, 1000); // Make GC run extremely fast to clear temporary objects
 
     lua_getglobal(L, "_update");
 
@@ -2587,5 +2676,12 @@ void lua_init()
         if (lua_isfunction(L, -1))
             m_lua_draw = lua_topointer(L, -1);
         lua_pop(L, 1);
+    }
+}
+
+void p8_lua_gc_step(void)
+{
+    if (L) {
+        lua_gc(L, LUA_GCSTEP, 400); // Process a significant chunk of garbage each frame
     }
 }

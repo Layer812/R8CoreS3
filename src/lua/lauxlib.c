@@ -922,8 +922,19 @@ static void *l_alloc (void *ud, void *ptr, size_t osize, size_t nsize) {
     free(ptr);
     return NULL;
   }
-  else
-    return realloc(ptr, nsize);
+  else {
+    void *new_ptr = realloc(ptr, nsize);
+    if (!new_ptr) {
+#ifdef OS_FREERTOS
+        extern uint32_t esp_get_free_heap_size(void);
+        extern size_t heap_caps_get_largest_free_block(uint32_t caps);
+        printf("l_alloc FAILED! Requested size: %u, Free Heap: %u, LFB: %u\n", (unsigned int)nsize, esp_get_free_heap_size(), heap_caps_get_largest_free_block(1));
+#else
+        printf("l_alloc FAILED! Requested size: %u\n", (unsigned int)nsize);
+#endif
+    }
+    return new_ptr;
+  }
 }
 
 

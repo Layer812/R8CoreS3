@@ -56,7 +56,7 @@ const char *lua_api_string =
     "\n"
     "\n"
     "function mapdraw(...)\n"
-    "  map(table.unpack(arg))\n"
+    "  map(...)\n"
     "end\n"
     "\n"
     "function count(t, v)\n"

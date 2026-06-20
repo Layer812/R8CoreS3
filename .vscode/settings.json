@@ -78,5 +78,8 @@
     "charconv": "c",
     "windows.h": "c",
     "malloc.h": "c"
+  },
+  "chat.tools.terminal.autoApprove": {
+    "&": true
   }
 }

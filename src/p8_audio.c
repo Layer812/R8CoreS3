@@ -14,7 +14,7 @@
 #include "p8_audio.h"
 #include "p8_dsp.h"
 #include "p8_emu.h"
-#include "queue.h"
+#include "p8_queue.h"
 
 #ifdef SDL
 #include "SDL.h"
@@ -132,7 +132,7 @@ bool m_sound_enabled = true;
 
 soundcommand_t m_sound_buffer[SOUND_QUEUE_SIZE];
 
-queue_t m_sound_queue = {
+p8_queue_t m_sound_queue = {
     .data_buf = m_sound_buffer,
     .elements_num_max = SOUND_QUEUE_SIZE,
     .elements_size = sizeof(soundcommand_t),
@@ -161,6 +161,7 @@ void audio_callback(void *userdata, uint8_t *cbuffer, int length)
 
 void audio_init()
 {
+    pthread_mutex_init(&m_sound_queue_mutex, NULL);
     _queue_init(&m_sound_queue);
 
 #ifdef SDL
@@ -277,7 +278,7 @@ int32_t audio_stat(int32_t index)
         }
         return any_music ? m_music_state.pattern : -1;
     }
-    if (index == 26 && index == 56) {
+    if (index == 26 || index == 56) {
         int ticks = 0;
         for (int i = 0; i < CHANNEL_COUNT; ++i)
             if (m_channels[i].sound_mode == SOUNDMODE_MUSIC)
@@ -308,6 +309,13 @@ void update_channel(soundstate_t *channel)
             bool is_stop = m_memory[MEMORY_MUSIC + 4 * m_music_state.pattern + 2] & (1 << 7);
             if (is_stop)
             {
+                for (int j = 0; j < CHANNEL_COUNT; j++)
+                {
+                    m_channels[j].sound_mode = SOUNDMODE_NONE;
+                    m_channels[j].sample = 0;
+                    m_channels[j].position = 0;
+                    m_channels[j].end = 0;
+                }
                 return;
             }
             m_music_state.pattern++;
@@ -326,14 +334,15 @@ void update_channel(soundstate_t *channel)
             for (int i = 0; i < CHANNEL_COUNT; i++)
             {
                 uint8_t channel_data = m_memory[MEMORY_MUSIC + 4 * m_music_state.pattern + i];
-                bool enabled = (channel_data & (1 << 6)) == 0;
+                bool channel_reserved = (m_music_state.channel_mask == 0) || ((m_music_state.channel_mask & (1 << i)) != 0);
+                bool enabled = (channel_data & (1 << 6)) == 0 && channel_reserved;
                 if (enabled)
                 {
                     m_channels[i].sound_mode = SOUNDMODE_MUSIC;
                     m_channels[i].sound_index = channel_data & 0x7F;
                     m_channels[i].sample = 0;
                     m_channels[i].position = 0;
-                    m_channels[i].end = 31;
+                    m_channels[i].end = 32;
                 }
                 else
                     m_channels[i].sound_mode = SOUNDMODE_NONE;
@@ -380,14 +389,35 @@ void update_sound_queue()
             }
             else if (sound->channel == -1)
             {
+                int best_channel = -1;
+                // 1st pass: find completely empty channel
                 for (int i = 0; i < CHANNEL_COUNT; i++)
                 {
                     if (m_channels[i].sound_mode == SOUNDMODE_NONE)
                     {
-                        sound->channel = i;
+                        best_channel = i;
                         break;
                     }
                 }
+                
+                // 2nd pass: if no empty channel, find the oldest SOUNDMODE_SOUND to overwrite
+                if (best_channel == -1)
+                {
+                    int oldest_sample = -1;
+                    for (int i = 0; i < CHANNEL_COUNT; i++)
+                    {
+                        if (m_channels[i].sound_mode == SOUNDMODE_SOUND)
+                        {
+                            if (m_channels[i].sample > oldest_sample)
+                            {
+                                oldest_sample = m_channels[i].sample;
+                                best_channel = i;
+                            }
+                        }
+                    }
+                }
+                
+                sound->channel = best_channel;
             }
             if (sound->channel >= 0 && sound->channel < CHANNEL_COUNT && sound->index >= 0 && sound->index <= SOUND_COUNT)
             {
@@ -396,7 +426,7 @@ void update_sound_queue()
                 int sample_per_tick = (SAMPLE_RATE / 128) * (speed + 1);
                 channel->sound_mode = SOUNDMODE_SOUND;
                 channel->sound_index = sound->index;
-                channel->end = sound->end;
+                channel->end = sound->start + sound->end;
                 channel->sample = sound->start;
                 channel->position = sound->start * sample_per_tick;
             }
@@ -414,17 +444,24 @@ void update_sound_queue()
             {
                 m_music_state.pattern = music->index;
                 m_music_state.channel_mask = music->mask;
+#ifdef IS_CARDPUTER
+                printf("[Audio] Starting music pattern: %d, mask: %d\n", music->index, music->mask);
+#endif
                 for (int i = 0; i < CHANNEL_COUNT; i++)
                 {
                     uint8_t channel_data = m_memory[MEMORY_MUSIC + 4 * m_music_state.pattern + i];
-                    bool enabled = (channel_data & (1 << 6)) == 0;
+                    bool channel_reserved = (m_music_state.channel_mask == 0) || ((m_music_state.channel_mask & (1 << i)) != 0);
+                    bool enabled = (channel_data & (1 << 6)) == 0 && channel_reserved;
                     if (enabled)
                     {
                         m_channels[i].sound_mode = SOUNDMODE_MUSIC;
                         m_channels[i].sound_index = channel_data & 0x7F;
                         m_channels[i].sample = 0;
                         m_channels[i].position = 0;
-                        m_channels[i].end = 31;
+                        m_channels[i].end = 32;
+#ifdef IS_CARDPUTER
+                        printf("[Audio] Music channel %d enabled, sound_index: %d\n", i, channel_data & 0x7F);
+#endif
                     }
                     else
                     {
@@ -471,6 +508,9 @@ void render_sound(int waveform, int pitch, int volume, int position, int offset,
         dsp_noise(frequency, amplitude, position, offset, length, buffer);
         break;
     case WAVEFORM_PHASER:
+        // A simple approximation of phaser: two triangle waves slightly detuned
+        dsp_triangle_wave(frequency, amplitude / 2, 0, position, offset, length, buffer);
+        dsp_triangle_wave((unsigned int)(frequency * 1.01f), amplitude / 2, 0, position, offset, length, buffer);
         break;
     }
 }
@@ -485,35 +525,65 @@ void render_sounds(int16_t *buffer, int total_samples)
     if (m_memory[MEMORY_AUDIO_PAUSE] == 1)
         return;
 
-    for (int i = 0; i < CHANNEL_COUNT; i++)
+    int index = 0;
+
+    while (index < total_samples)
     {
-        soundstate_t *channel = &m_channels[i];
+        uint8_t music_speed = 16;
+        for (int i = 0; i < CHANNEL_COUNT; i++) {
+            if (m_channels[i].sound_mode == SOUNDMODE_MUSIC) {
+                music_speed = m_memory[MEMORY_SFX + 68 * m_channels[i].sound_index + 64 + 1];
+                break;
+            }
+        }
 
-        if ((channel->sound_mode == SOUNDMODE_MUSIC && m_music_enabled) || (channel->sound_mode == SOUNDMODE_SOUND && m_sound_enabled))
+        int chunk_length = total_samples - index;
+        for (int i = 0; i < CHANNEL_COUNT; i++)
         {
-            // uint8_t editor_mode = m_memory[MEMORY_SFX + 68 * channel->sound_index + 64];
-            uint8_t speed = m_memory[MEMORY_SFX + 68 * channel->sound_index + 64 + 1];
-            // uint8_t loop_start = m_memory[MEMORY_SFX + 68 * channel->sound_index + 64 + 2];
-            // uint8_t loop_end = m_memory[MEMORY_SFX + 68 * channel->sound_index + 64 + 3];
-            int sample_per_tick = (SAMPLE_RATE / 128) * (speed + 1);
-            int index = 0;
-
-            while (index < total_samples)
+            soundstate_t *channel = &m_channels[i];
+            if (channel->sound_mode != SOUNDMODE_NONE)
             {
+                if (channel->sample >= channel->end)
+                    continue;
+
+                uint8_t speed = (channel->sound_mode == SOUNDMODE_MUSIC) ? music_speed :
+                    m_memory[MEMORY_SFX + 68 * channel->sound_index + 64 + 1];
+                int sample_per_tick = (SAMPLE_RATE / 128) * (speed + 1);
+                int samples_to_next_tick = sample_per_tick - (channel->position % sample_per_tick);
+                if (samples_to_next_tick < chunk_length)
+                    chunk_length = samples_to_next_tick;
+            }
+        }
+
+        if (chunk_length <= 0)
+            chunk_length = 1;
+
+        for (int i = 0; i < CHANNEL_COUNT; i++)
+        {
+            soundstate_t *channel = &m_channels[i];
+
+            if ((channel->sound_mode == SOUNDMODE_MUSIC && m_music_enabled) ||
+                (channel->sound_mode == SOUNDMODE_SOUND && m_sound_enabled))
+            {
+                if (channel->sample >= channel->end)
+                    continue;
+
+                uint8_t speed = (channel->sound_mode == SOUNDMODE_MUSIC) ? music_speed :
+                    m_memory[MEMORY_SFX + 68 * channel->sound_index + 64 + 1];
+                int sample_per_tick = (SAMPLE_RATE / 128) * (speed + 1);
+
                 uint8_t data_lo = m_memory[MEMORY_SFX + 68 * channel->sound_index + channel->sample * 2];
                 uint8_t data_hi = m_memory[MEMORY_SFX + 68 * channel->sound_index + channel->sample * 2 + 1];
                 uint16_t data = (uint16_t)((data_hi << 8) | data_lo);
-                // bool use_sfx = data & 0x8000;
+
                 uint8_t effect = (data & EFFECT_MASK) >> EFFECT_SHIFT;
                 uint8_t volume = (data & VOLUME_MASK) >> VOLUME_SHIFT;
                 uint8_t waveform = (data & WAVEFORM_MASK) >> WAVEFORM_SHIFT;
                 uint8_t pitch = data & PITCH_MASK;
 
-                int length = MIN(total_samples - index, sample_per_tick - (channel->position % sample_per_tick));
-
-                /* Apply effect: compute modified pitch and volume */
                 int eff_pitch = pitch;
                 int eff_volume = volume;
+
                 if (effect != EFFECT_NONE)
                 {
                     float t = (float)(channel->position % sample_per_tick) / (float)sample_per_tick;
@@ -564,13 +634,79 @@ void render_sounds(int16_t *buffer, int total_samples)
                     if (eff_volume > 7) eff_volume = 7;
                 }
 
-                render_sound(waveform, eff_pitch, eff_volume, channel->position, index, length, buffer);
+                render_sound(waveform, eff_pitch, eff_volume, channel->position, index, chunk_length, buffer);
 
-                index += length;
-                channel->position += length;
+                channel->position += chunk_length;
                 channel->sample = channel->position / sample_per_tick;
+            }
+        }
 
-                update_channel(channel);
+        index += chunk_length;
+
+        bool music_advance = false;
+        bool has_music = false;
+        bool all_music_ended = true;
+        for (int i = 0; i < CHANNEL_COUNT; i++)
+        {
+            soundstate_t *channel = &m_channels[i];
+            if (channel->sound_mode == SOUNDMODE_MUSIC)
+            {
+                has_music = true;
+                if (channel->sample < channel->end)
+                    all_music_ended = false;
+            }
+            else if (channel->sound_mode == SOUNDMODE_SOUND)
+            {
+                if (channel->sample >= channel->end)
+                    channel->sound_mode = SOUNDMODE_NONE;
+            }
+        }
+
+        if (has_music && all_music_ended)
+        {
+            bool is_loop_begin = m_memory[MEMORY_MUSIC + 4 * m_music_state.pattern] & (1 << 7);
+            bool is_loop_end = m_memory[MEMORY_MUSIC + 4 * m_music_state.pattern + 1] & (1 << 7);
+            bool is_stop = m_memory[MEMORY_MUSIC + 4 * m_music_state.pattern + 2] & (1 << 7);
+
+            if (is_stop)
+            {
+                for (int j = 0; j < CHANNEL_COUNT; j++)
+                    m_channels[j].sound_mode = SOUNDMODE_NONE;
+            }
+            else
+            {
+                m_music_state.pattern++;
+                if (is_loop_end || m_music_state.pattern == MUSIC_COUNT)
+                {
+                    int i = m_music_state.pattern - 1;
+                    while (i >= 0)
+                    {
+                        is_loop_begin = (m_memory[MEMORY_MUSIC + 4 * i] & (1 << 7));
+                        if (is_loop_begin || i == 0)
+                            break;
+                        i--;
+                    }
+                    m_music_state.pattern = i;
+                }
+
+                for (int i = 0; i < CHANNEL_COUNT; i++)
+                {
+                    uint8_t channel_data = m_memory[MEMORY_MUSIC + 4 * m_music_state.pattern + i];
+                    bool channel_reserved = (m_music_state.channel_mask == 0) || ((m_music_state.channel_mask & (1 << i)) != 0);
+                    bool enabled = (channel_data & (1 << 6)) == 0 && channel_reserved;
+                    if (enabled)
+                    {
+                        m_channels[i].sound_mode = SOUNDMODE_MUSIC;
+                        m_channels[i].sound_index = channel_data & 0x7F;
+                        m_channels[i].sample = 0;
+                        m_channels[i].position = 0;
+                        m_channels[i].end = 32;
+                    }
+                    else
+                    {
+                        m_channels[i].sound_mode = SOUNDMODE_NONE;
+                    }
+                }
             }
         }
     }

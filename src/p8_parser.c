@@ -13,7 +13,7 @@
 #include <ctype.h>
 #include <assert.h>
 #include <limits.h>
-#include "lodepng.h"
+#include "pngle.h"
 #include "p8_emu.h"
 #include "pico8.h"
 #include "p8_lua_helper.h"
@@ -21,6 +21,102 @@
 #ifndef PATH_MAX
 #define PATH_MAX 256
 #endif
+
+#ifdef OS_FREERTOS
+#include <esp_partition.h>
+/* spi_flash_mmap_handle_t is defined in esp_partition.h or esp_spi_flash.h */
+
+static spi_flash_mmap_handle_t g_lua_mmap_handle = 0;
+static const void *g_lua_mmap_ptr = NULL;
+
+static spi_flash_mmap_handle_t g_cart_mmap_handle = 0;
+static const void *g_cart_mmap_ptr = NULL;
+#endif
+
+void p8_unmap_lua_script(void) {
+#ifdef OS_FREERTOS
+    if (g_lua_mmap_handle) {
+        spi_flash_munmap(g_lua_mmap_handle);
+        g_lua_mmap_handle = 0;
+        g_lua_mmap_ptr = NULL;
+    }
+#endif
+}
+
+static const char* p8_map_lua_script(const uint8_t* lua_code, size_t length) {
+#ifdef OS_FREERTOS
+    p8_unmap_lua_script();
+
+    const esp_partition_t *part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "romdata");
+    if (!part) {
+        fprintf(stderr, "Error: romdata partition not found!\n");
+        return NULL;
+    }
+
+    size_t erase_size = (length + 4095) & ~4095;
+    if (esp_partition_erase_range(part, 0, erase_size) != ESP_OK) {
+        fprintf(stderr, "Error erasing flash!\n");
+        return NULL;
+    }
+
+    if (esp_partition_write(part, 0, lua_code, length) != ESP_OK) {
+        fprintf(stderr, "Error writing to flash!\n");
+        return NULL;
+    }
+
+    uint8_t zero = 0;
+    esp_partition_write(part, length, &zero, 1);
+
+    if (esp_partition_mmap(part, 0, erase_size, SPI_FLASH_MMAP_DATA, &g_lua_mmap_ptr, &g_lua_mmap_handle) != ESP_OK) {
+        fprintf(stderr, "Error mapping flash!\n");
+        return NULL;
+    }
+
+    return (const char*)g_lua_mmap_ptr;
+#else
+    uint8_t *ram_copy = malloc(length + 1);
+    if (ram_copy) {
+        memcpy(ram_copy, lua_code, length);
+        ram_copy[length] = '\0';
+    }
+    return (const char*)ram_copy;
+#endif
+}
+
+void p8_unmap_cart_memory(void) {
+#ifdef OS_FREERTOS
+    if (g_cart_mmap_handle) {
+        spi_flash_munmap(g_cart_mmap_handle);
+        g_cart_mmap_handle = 0;
+        g_cart_mmap_ptr = NULL;
+    }
+#endif
+}
+
+const void* p8_map_cart_memory(const uint8_t* cart_data, size_t length) {
+#ifdef OS_FREERTOS
+    p8_unmap_cart_memory();
+
+    const esp_partition_t *part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, "romdata");
+    if (!part) return NULL;
+
+    // Offset 0x10000 (64KB) is reserved for cart memory
+    size_t offset = 0x10000;
+    size_t erase_size = (length + 4095) & ~4095;
+    
+    if (esp_partition_erase_range(part, offset, erase_size) != ESP_OK) return NULL;
+    if (esp_partition_write(part, offset, cart_data, length) != ESP_OK) return NULL;
+    if (esp_partition_mmap(part, offset, erase_size, SPI_FLASH_MMAP_DATA, &g_cart_mmap_ptr, &g_cart_mmap_handle) != ESP_OK) return NULL;
+
+    return g_cart_mmap_ptr;
+#else
+    uint8_t *ram_copy = malloc(length);
+    if (ram_copy) {
+        memcpy(ram_copy, cart_data, length);
+    }
+    return ram_copy;
+#endif
+}
 
 #define RAW_DATA_LENGTH 0x4300
 #define IMAGE_WIDTH 160
@@ -91,6 +187,7 @@ int parse_cart_ram(uint8_t *buffer, int size, uint8_t *memory, const char **lua_
 int parse_cart_file(const char *file_name, uint8_t *memory, const char **lua_script, uint8_t **file_buffer, uint8_t *label_image);
 static int parse_p8_ram(const char *file_name, uint8_t *buffer, int size, uint8_t *memory, const char **lua_script, uint8_t *label_image);
 static int parse_png_ram(const char *file_name, uint8_t *buffer, int size, uint8_t *memory, const char **lua_script, uint8_t **decompression_buffer, uint8_t *label_image);
+static int parse_png_stream(const char *file_name, FILE *file, uint8_t *memory, const char **lua_script, uint8_t **decompression_buffer, uint8_t *label_image);
 static char *process_includes(const char *lua_script, const char *cart_dir);
 static void convert_utf8_to_p8scii(uint8_t *buffer, size_t len);
 
@@ -225,38 +322,59 @@ int parse_cart_file(const char *file_name, uint8_t *memory, const char **lua_scr
         return -1;
     }
 
-    fseek(file, 0, SEEK_END);
-    long file_size = ftell(file);
-    rewind(file);
+    uint8_t header[8];
+    size_t header_len = fread(header, 1, 8, file);
+    uint8_t *decompression_buffer = NULL;
+
+    if (header_len == 8 && memcmp(header, PNG_SIGNATURE, 8) == 0) {
+        rewind(file);
+        int ret = parse_png_stream(file_name, file, memory, lua_script, &decompression_buffer, label_image);
+        fclose(file);
+        
+        if (ret != 0) return -1;
+        
+        if (decompression_buffer) {
+            *file_buffer = decompression_buffer;
+        } else {
+#ifndef OS_FREERTOS
+            *file_buffer = (uint8_t *)malloc(1);
+#else
+            *file_buffer = (uint8_t *)rh_malloc(1);
+#endif
+            if (*file_buffer) (*file_buffer)[0] = '\0';
+        }
+    } else {
+        fseek(file, 0, SEEK_END);
+        long file_size = ftell(file);
+        rewind(file);
 
 #ifndef OS_FREERTOS
-    *file_buffer = (uint8_t *)malloc(file_size + 1);
+        *file_buffer = (uint8_t *)malloc(file_size + 1);
 #else
-    *file_buffer = (uint8_t *)rh_malloc(file_size + 1);
+        *file_buffer = (uint8_t *)rh_malloc(file_size + 1);
 #endif
 
-    fread(*file_buffer, 1, file_size, file);
+        fread(*file_buffer, 1, file_size, file);
 
-    fclose(file);
+        fclose(file);
 
-    (*file_buffer)[file_size] = '\0';
+        (*file_buffer)[file_size] = '\0';
 
-    uint8_t *decompression_buffer = NULL;
-    if (parse_cart_ram0(file_name, (uint8_t *)*file_buffer, (int)file_size, memory, lua_script, &decompression_buffer, label_image) != 0) {
+        if (parse_p8_ram(file_name, (uint8_t *)*file_buffer, (int)file_size, memory, lua_script, label_image) != 0) {
 #ifdef OS_FREERTOS
-        rh_free(*file_buffer);
+            rh_free(*file_buffer);
 #else
-        free(*file_buffer);
+            free(*file_buffer);
 #endif
-        return -1;
-    }
-    if (decompression_buffer) {
+            return -1;
+        }
+
 #ifdef OS_FREERTOS
+        // Since lua script is mapped to flash, free file_buffer right now to save RAM before lua compilation
         rh_free(*file_buffer);
-#else
-        free(*file_buffer);
+        *file_buffer = (uint8_t *)rh_malloc(1);
+        if (*file_buffer) (*file_buffer)[0] = '\0';
 #endif
-        *file_buffer = decompression_buffer;
     }
 
     // Process #include directives in the Lua section
@@ -547,8 +665,13 @@ int parse_p8_ram(const char *file_name, uint8_t *buffer, int size, uint8_t *memo
 
     convert_utf8_to_p8scii(&buffer[lua_start], lua_end - lua_start);
 
-    if (lua_script)
+    if (lua_script) {
+#ifdef OS_FREERTOS
+        *lua_script = p8_map_lua_script(&buffer[lua_start], lua_end - lua_start);
+#else
         *lua_script = (const char *) &buffer[lua_start];
+#endif
+    }
 
     return 0;
 }
@@ -556,28 +679,19 @@ int parse_p8_ram(const char *file_name, uint8_t *buffer, int size, uint8_t *memo
 #define PNG_WIDTH 160
 #define PNG_HEIGHT 205
 
-int parse_png_ram(const char *file_name, uint8_t *buffer, int file_size, uint8_t *memory, const char **lua_script, uint8_t **decompression_buffer, uint8_t *label_image)
-{
-    if (lua_script)
-        *lua_script = NULL;
-    if (decompression_buffer)
-        *decompression_buffer = NULL;
-    uint8_t *px_buffer = NULL;
-    unsigned width = 0, height = 0;
-    unsigned ret = lodepng_decode32(&px_buffer, &width, &height, buffer, file_size);
-    if (ret != 0) {
-        fprintf(stderr, "%s\n", lodepng_error_text(ret));
-        return -1;
-    }
-    if (width != PNG_WIDTH || height != PNG_HEIGHT) {
-        if (file_name)
-            fprintf(stderr, "%s: ", file_name);
-        fprintf(stderr, "PNG has wrong size: %dx%d (expected 160x205)\n", width, height);
-        return -1;
-    }
+typedef struct {
+    uint8_t *memory;
+    uint8_t *lua_compressed_buf;
+    uint32_t lua_compressed_idx;
+    uint32_t lua_compressed_cap;
+    uint8_t *label_image;
+    uint32_t total_bytes_written;
+} StegoState;
 
-    if (label_image) {
-        // 32-colour extended palette (R, G, B) with the two least significant bits masked off
+static void on_draw_pixel(pngle_t *pngle, unsigned int x, unsigned int y, unsigned int w, unsigned int h, const unsigned char rgba[4]) {
+    StegoState *state = (StegoState*)pngle_get_user_data(pngle);
+
+    if (state->label_image && x >= 16 && x < 144 && y >= 24 && y < 152) {
         static const uint8_t palette[32][3] = {
             {0, 0, 0}, {28, 40, 80}, {124, 36, 80}, {0, 132, 80},
             {168, 80, 52}, {92, 84, 76}, {192, 192, 196}, {252, 240, 232},
@@ -589,64 +703,145 @@ int parse_png_ram(const char *file_name, uint8_t *buffer, int file_size, uint8_t
             {4, 88, 180}, {116, 68, 100}, {252, 108, 88}, {252, 156, 128}
         };
 
-        const int label_left = 16;
-        const int label_top = 24;
+        uint8_t color = 0;
+        uint8_t r = rgba[0] & 0xFC;
+        uint8_t g = rgba[1] & 0xFC;
+        uint8_t b = rgba[2] & 0xFC;
 
-        for (int y = 0; y < 128; y++) {
-            for (int x = 0; x < 128; x += 2) {
-                int left_offset = ((label_top + y) * PNG_WIDTH + (label_left + x)) << 2;
-                int right_offset = ((label_top + y) * PNG_WIDTH + (label_left + x + 1)) << 2;
-
-                uint8_t left_r = px_buffer[left_offset] & 0xFC;
-                uint8_t left_g = px_buffer[left_offset + 1] & 0xFC;
-                uint8_t left_b = px_buffer[left_offset + 2] & 0xFC;
-
-                uint8_t right_r = px_buffer[right_offset] & 0xFC;
-                uint8_t right_g = px_buffer[right_offset + 1] & 0xFC;
-                uint8_t right_b = px_buffer[right_offset + 2] & 0xFC;
-
-                // Find matching palette colour index for each pixel
-                uint8_t left_color = 0;
-                for (int i = 0; i < 32; i++) {
-                    if (palette[i][0] == left_r &&
-                        palette[i][1] == left_g &&
-                        palette[i][2] == left_b) {
-                        left_color = i;
-                        break;
-                    }
-                }
-
-                uint8_t right_color = 0;
-                for (int i = 0; i < 32; i++) {
-                    if (palette[i][0] == right_r &&
-                        palette[i][1] == right_g &&
-                        palette[i][2] == right_b) {
-                        right_color = i;
-                        break;
-                    }
-                }
-
-                label_image[y * 128 + x] = left_color;
-                label_image[y * 128 + x + 1] = right_color;
+        for (int i = 0; i < 32; i++) {
+            if (palette[i][0] == r && palette[i][1] == g && palette[i][2] == b) {
+                color = i;
+                break;
             }
+        }
+        int lx = x - 16;
+        int ly = y - 24;
+        state->label_image[ly * 128 + lx] = color;
+    }
+
+    if (state->total_bytes_written < 32800) {
+        uint8_t r = rgba[0], g = rgba[1], b = rgba[2], a = rgba[3];
+        uint8_t rom_byte = ((a & 0x3) << 6) | ((r & 0x3) << 4) | ((g & 0x3) << 2) | (b & 0x3);
+
+        if (state->total_bytes_written < CART_MEMORY_SIZE) {
+            if (state->memory) {
+                state->memory[state->total_bytes_written] = rom_byte;
+            }
+        } else {
+            if (state->lua_compressed_idx >= state->lua_compressed_cap) {
+                uint32_t new_cap = state->lua_compressed_cap == 0 ? 8192 : state->lua_compressed_cap * 2;
+                uint8_t* new_buf = (uint8_t*)realloc(state->lua_compressed_buf, new_cap);
+                if (new_buf) {
+                    state->lua_compressed_buf = new_buf;
+                    state->lua_compressed_cap = new_cap;
+                }
+            }
+            if (state->lua_compressed_buf && state->lua_compressed_idx < state->lua_compressed_cap) {
+                state->lua_compressed_buf[state->lua_compressed_idx++] = rom_byte;
+            }
+        }
+        state->total_bytes_written++;
+    }
+}
+
+static int decode_pngle_state(StegoState *state, const char **lua_script, uint8_t **decompression_buffer) {
+    if (decompression_buffer && state->lua_compressed_idx > 0) {
+#ifndef OS_FREERTOS
+        *decompression_buffer = (uint8_t*)malloc(0x10001);
+#else
+        *decompression_buffer = (uint8_t*)rh_malloc(0x10001);
+#endif
+        if (!*decompression_buffer) {
+            fprintf(stderr, "Failed to allocate 64KB decompression buffer!\n");
+            return -1;
+        }
+        pico8_code_section_decompress(state->lua_compressed_buf, *decompression_buffer, 0x10000);
+        
+        size_t actual_len = strlen((char*)*decompression_buffer);
+#ifndef OS_FREERTOS
+        uint8_t *shrunk = (uint8_t*)realloc(*decompression_buffer, actual_len + 1);
+        if (shrunk) {
+            *decompression_buffer = shrunk;
+        }
+        if (lua_script)
+            *lua_script = (char *)*decompression_buffer;
+#else
+        const char *mmap_ptr = p8_map_lua_script(*decompression_buffer, actual_len);
+        rh_free(*decompression_buffer);
+        *decompression_buffer = (uint8_t*)rh_malloc(1);
+        if (*decompression_buffer) (*decompression_buffer)[0] = '\0';
+        if (lua_script)
+            *lua_script = mmap_ptr;
+#endif
+    }
+    return 0;
+}
+
+int parse_png_ram(const char *file_name, uint8_t *buffer, int file_size, uint8_t *memory, const char **lua_script, uint8_t **decompression_buffer, uint8_t *label_image)
+{
+    if (lua_script) *lua_script = NULL;
+    if (decompression_buffer) *decompression_buffer = NULL;
+
+    StegoState state = { memory, NULL, 0, 0, label_image, 0 };
+    pngle_t *pngle = pngle_new();
+    if (!pngle) return -1;
+    pngle_set_user_data(pngle, &state);
+    pngle_set_draw_callback(pngle, on_draw_pixel);
+
+    if (pngle_feed(pngle, buffer, file_size) < 0) {
+        fprintf(stderr, "%s: pngle error: %s\n", file_name ? file_name : "unknown", pngle_error(pngle));
+        pngle_destroy(pngle);
+        if (state.lua_compressed_buf) free(state.lua_compressed_buf);
+        return -1;
+    }
+
+    if (pngle_get_width(pngle) != PNG_WIDTH || pngle_get_height(pngle) != PNG_HEIGHT) {
+        if (file_name) fprintf(stderr, "%s: ", file_name);
+        fprintf(stderr, "PNG has wrong size: %dx%d (expected 160x205)\n", pngle_get_width(pngle), pngle_get_height(pngle));
+        pngle_destroy(pngle);
+        if (state.lua_compressed_buf) free(state.lua_compressed_buf);
+        return -1;
+    }
+
+    pngle_destroy(pngle);
+
+    int ret = decode_pngle_state(&state, lua_script, decompression_buffer);
+    if (state.lua_compressed_buf) free(state.lua_compressed_buf);
+    return ret;
+}
+
+static int parse_png_stream(const char *file_name, FILE *file, uint8_t *memory, const char **lua_script, uint8_t **decompression_buffer, uint8_t *label_image)
+{
+    if (lua_script) *lua_script = NULL;
+    if (decompression_buffer) *decompression_buffer = NULL;
+
+    StegoState state = { memory, NULL, 0, 0, label_image, 0 };
+    pngle_t *pngle = pngle_new();
+    if (!pngle) return -1;
+    pngle_set_user_data(pngle, &state);
+    pngle_set_draw_callback(pngle, on_draw_pixel);
+
+    uint8_t read_buf[512];
+    size_t len;
+    while ((len = fread(read_buf, 1, sizeof(read_buf), file)) > 0) {
+        if (pngle_feed(pngle, read_buf, len) < 0) {
+            fprintf(stderr, "%s: pngle error: %s\n", file_name, pngle_error(pngle));
+            pngle_destroy(pngle);
+            if (state.lua_compressed_buf) free(state.lua_compressed_buf);
+            return -1;
         }
     }
 
-    uint8_t *px_buffer_in = px_buffer;
-    uint8_t *byte_buffer = px_buffer;
-    uint8_t *byte_buffer_out = byte_buffer;
-    for (unsigned i=0;i<PNG_WIDTH*PNG_HEIGHT;++i) {
-        *byte_buffer_out = ((px_buffer_in[3] & 0x3) << 6) | ((px_buffer_in[0] & 0x3) << 4) | ((px_buffer_in[1] & 0x3) << 2) | (px_buffer_in[2] & 0x3);
-        px_buffer_in += 4;
-        byte_buffer_out++;
-    }
-    memcpy(memory, byte_buffer, CART_MEMORY_SIZE);
-    if (decompression_buffer) {
-        *decompression_buffer = malloc(0x20001);
-        pico8_code_section_decompress(byte_buffer + CART_MEMORY_SIZE, *decompression_buffer, 0x20000);
-        if (lua_script)
-            *lua_script = (char *)*decompression_buffer;
+    if (pngle_get_width(pngle) != PNG_WIDTH || pngle_get_height(pngle) != PNG_HEIGHT) {
+        fprintf(stderr, "%s: PNG has wrong size: %dx%d (expected 160x205)\n", file_name, pngle_get_width(pngle), pngle_get_height(pngle));
+        pngle_destroy(pngle);
+        if (state.lua_compressed_buf) free(state.lua_compressed_buf);
+        return -1;
     }
 
-    return 0;
+    pngle_destroy(pngle);
+
+    int ret = decode_pngle_state(&state, lua_script, decompression_buffer);
+    if (state.lua_compressed_buf) free(state.lua_compressed_buf);
+    return ret;
 }

@@ -106,9 +106,20 @@ void dsp_organ_wave(uint32_t frequency, int16_t amplitude, int16_t offset, float
 
 void dsp_noise(uint32_t frequency, int16_t amplitude, int position, int dest_offset, int dest_length, int16_t *dest)
 {
+    // PICO-8 noise gets "crunchier" at lower frequencies.
+    // We achieve this by holding the random value for several samples based on frequency.
+    int samples_per_change = 44100 / (frequency > 0 ? frequency : 1);
+    if (samples_per_change <= 0) samples_per_change = 1;
+
     for (int i = 0; i < dest_length; i++)
     {
-        dest[dest_offset + i] += (int16_t)random_range(-amplitude / 2, amplitude / 2);
+        int chunk_index = position / samples_per_change;
+        // Simple hash to get pseudo-random value that is consistent for the same chunk_index
+        uint32_t hash = (uint32_t)chunk_index * 2654435761U;
+        hash ^= hash >> 16;
+        int16_t val = (int16_t)((hash % (uint32_t)(amplitude + 1)) - (amplitude / 2));
+
+        dest[dest_offset + i] += val;
         position++;
     }
 }

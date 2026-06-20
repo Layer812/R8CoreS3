@@ -44,6 +44,7 @@ static inline void overlay_clip_get(int *x, int *y, int *w, int *h)
 
 static inline void overlay_draw_hline(int x0, int x1, int y, int col)
 {
+    if (!m_overlay_memory) return;
     if (y < overlay_clip_y0 || y >= overlay_clip_y1)
         return;
 
@@ -75,6 +76,7 @@ static inline void overlay_draw_hline(int x0, int x1, int y, int col)
 
 static inline void overlay_draw_vline(int x, int y0, int y1, int col)
 {
+    if (!m_overlay_memory) return;
     if (x < overlay_clip_x0 || x >= overlay_clip_x1)
         return;
 
@@ -104,6 +106,7 @@ static inline void overlay_draw_vline(int x, int y0, int y1, int col)
 
 static inline void overlay_draw_rect(int x0, int y0, int x1, int y1, int col)
 {
+    if (!m_overlay_memory) return;
     overlay_draw_hline(x0, x1, y0, col);
     overlay_draw_hline(x0, x1, y1, col);
     overlay_draw_vline(x0, y0, y1, col);
@@ -112,6 +115,7 @@ static inline void overlay_draw_rect(int x0, int y0, int x1, int y1, int col)
 
 static inline void overlay_draw_rectfill(int x0, int y0, int x1, int y1, int col)
 {
+    if (!m_overlay_memory) return;
     if (x0 > x1) {
         int tmp = x0;
         x0 = x1;
@@ -167,6 +171,7 @@ static inline int overlay_get_text_width(const char *text)
 
 static inline void overlay_pixel(int x, int y, int col)
 {
+    if (!m_overlay_memory) return;
     if (x < overlay_clip_x0 || y < overlay_clip_y0 || x >= overlay_clip_x1 || y >= overlay_clip_y1)
         return;
 
@@ -212,11 +217,13 @@ static inline void overlay_draw_simple_text(const char *str, int x, int y, int c
 
 static inline void overlay_clear(void)
 {
+    if (!m_overlay_memory) return;
     memset(m_overlay_memory, OVERLAY_TRANSPARENT_COLOR, MEMORY_SCREEN_SIZE);
 }
 
 static inline void overlay_draw_icon(const uint8_t *icon, int x, int y)
 {
+    if (!m_overlay_memory) return;
     assert((x & 1) == 0);
     uint8_t *dest = m_overlay_memory + (x >> 1) + y * 64;
     for (int r=0;r<8;++r) {

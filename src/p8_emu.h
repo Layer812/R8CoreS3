@@ -21,8 +21,16 @@
 
 #define PROGNAME "femto8"
 
-#ifdef __DA1470x__
+#if defined(__DA1470x__) || defined(IS_CARDPUTER) || defined(IS_ATOMS3)
 #define OS_FREERTOS
+#if defined(IS_CARDPUTER) || defined(IS_ATOMS3)
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/semphr.h>
+#define rh_malloc malloc
+#define rh_free free
+#define ENABLE_AUDIO
+#endif
 #else
 #define SDL
 #define ENABLE_AUDIO
@@ -37,8 +45,12 @@
 #endif
 
 // #define BOOL_NULL -1
+#ifndef PI
 #define PI 3.14159265358f
+#endif
+#ifndef TWO_PI
 #define TWO_PI 6.28318530718f
+#endif
 
 #ifndef MAX
 #define MAX(a, b) ((a) > (b) ? a : b)
@@ -273,7 +285,7 @@ typedef uint_fast64_t p8_clock_t;
 extern p8_clock_t m_start_time;
 
 extern unsigned char *m_memory;
-extern unsigned char *m_cart_memory;
+// m_cart_memory removed
 extern char *m_font;
 
 extern uint8_t *m_overlay_memory;
@@ -311,6 +323,7 @@ void p8_flip(void);
 void p8_flush_cartdata(void);
 int p8_init(void);
 int p8_init_file_with_param(const char *file_name, const char *param);
+void p8_step();
 void __attribute__ ((noreturn)) p8_load_new(const char *filename, const char *param);
 void p8_set_skip_main_loop_if_no_callbacks(bool skip);
 int p8_init_ram(uint8_t *buffer, int size);

@@ -16,6 +16,8 @@
 
 const char *femto8_version = VERSION;
 
+#ifndef IS_CARDPUTER
+
 int main(int argc, char *argv[])
 {
     const char *file_name = NULL;
@@ -51,3 +53,5 @@ int main(int argc, char *argv[])
 
     return exit_code;
 }
+
+#endif

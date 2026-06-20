@@ -25,6 +25,11 @@
 #include "p8_dialog.h"
 #include "p8_emu.h"
 #include "p8_lua.h"
+#ifndef IS_CARDPUTER
+#include "gdi.h"
+#include "hal.h"
+#endif
+#include <Arduino.h>
 #include "p8_lua_helper.h"
 #include "p8_overlay_helper.h"
 #include "p8_parser.h"
@@ -32,7 +37,7 @@
 
 #ifdef SDL
 #include "SDL.h"
-#else
+#elif !defined(IS_CARDPUTER)
 #include "gdi.h"
 #endif
 
@@ -60,7 +65,7 @@ static int p8_init_lcd(void);
 static void p8_main_loop();
 
 uint8_t *m_memory = NULL;
-uint8_t *m_cart_memory = NULL;
+// m_cart_memory completely removed to save 32KB RAM
 
 uint8_t *m_overlay_memory = NULL;
 
@@ -171,7 +176,6 @@ int p8_init()
 
 #ifdef SDL
     m_memory = (uint8_t *)malloc(MEMORY_SIZE);
-    m_cart_memory = (uint8_t *)malloc(CART_MEMORY_SIZE);
     m_overlay_memory = (uint8_t *)malloc(MEMORY_SCREEN_SIZE);
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0)
     {
@@ -193,14 +197,23 @@ int p8_init()
 
     xSemaphoreGive(m_drawSemaphore);
 
-    m_memory = (uint8_t *)rh_malloc(MEMORY_SIZE);
-    m_cart_memory = (uint8_t *)rh_malloc(CART_MEMORY_SIZE);
+    if (!m_memory) {
+        m_memory = (uint8_t *)rh_malloc(MEMORY_SIZE);
+        if (!m_memory) {
+            printf("FATAL: Failed to allocate m_memory (32KB)\n");
+        }
+    }
+#ifndef IS_CARDPUTER
+#ifdef OS_FREERTOS
     m_overlay_memory = (uint8_t *)rh_malloc(MEMORY_SCREEN_SIZE);
+#else
+    m_overlay_memory = (uint8_t *)malloc(MEMORY_SCREEN_SIZE);
+#endif
+    memset(m_overlay_memory, (OVERLAY_TRANSPARENT_COLOR << 4) | OVERLAY_TRANSPARENT_COLOR, MEMORY_SCREEN_SIZE);
+#endif
 #endif
 
     memset(m_memory, 0, MEMORY_SIZE);
-    memset(m_cart_memory, 0, CART_MEMORY_SIZE);
-    memset(m_overlay_memory, (OVERLAY_TRANSPARENT_COLOR << 4) | OVERLAY_TRANSPARENT_COLOR, MEMORY_SCREEN_SIZE);
 
 #ifdef ENABLE_AUDIO
     audio_init();
@@ -221,7 +234,7 @@ int p8_init()
 
 static int p8_init_lcd(void)
 {
-#ifndef SDL
+#if !defined(SDL) && !defined(IS_CARDPUTER)
     gdi_set_layer_start(HW_LCDC_LAYER_0, 0, 0);
 
     gdi_set_layer_enable(HW_LCDC_LAYER_0, true);
@@ -253,7 +266,7 @@ static int p8_init_common(const char *file_name, const char *lua_script)
 
     restart = false;
 
-    memcpy(m_memory, m_cart_memory, CART_MEMORY_SIZE);
+    // m_memory is copied inside p8_resume_memory_after_lua_compile now
 
     m_frames = 0;
     for (unsigned p = 0; p < PLAYER_COUNT; ++p) {
@@ -271,7 +284,9 @@ static int p8_init_common(const char *file_name, const char *lua_script)
     lua_init();
 
     if (!skip_main_loop_if_no_callbacks || lua_has_main_loop_callbacks())
-        p8_main_loop();
+    #if !defined(IS_CARDPUTER)
+    p8_main_loop();
+#endif
     return 0;
 }
 
@@ -332,8 +347,24 @@ int p8_init_file_with_param(const char *file_name, const char *param)
     lua_load_api();
 
     printf("Loading %s\n", file_name);
-    if (parse_cart_file(file_name, m_cart_memory, &lua_script, &file_buffer, NULL) != 0)
+    
+    if (!m_memory) {
+        m_memory = (uint8_t *)rh_malloc(MEMORY_SIZE);
+    }
+    memset(m_memory, 0, MEMORY_SIZE);
+
+    if (parse_cart_file(file_name, m_memory, &lua_script, &file_buffer, NULL) != 0) {
         return -1;
+    }
+
+#ifndef IS_CARDPUTER
+#ifdef OS_FREERTOS
+    rh_free(m_overlay_memory);
+#else
+    free(m_overlay_memory);
+#endif
+    m_overlay_memory = NULL;
+#endif
 
     int ret = p8_init_common(file_name, lua_script);
 
@@ -357,7 +388,12 @@ int p8_init_ram(uint8_t *buffer, int size)
     const char *lua_script = NULL;
     uint8_t *decompression_buffer = NULL;
 
-    parse_cart_ram(buffer, size, m_cart_memory, &lua_script, &decompression_buffer);
+    if (!m_memory) {
+        m_memory = (uint8_t *)rh_malloc(MEMORY_SIZE);
+    }
+    memset(m_memory, 0, MEMORY_SIZE);
+
+    parse_cart_ram(buffer, size, m_memory, &lua_script, &decompression_buffer, NULL);
 
     // printf("%s", m_lua_script);
 
@@ -377,6 +413,7 @@ int p8_shutdown()
     audio_close();
 
     lua_shutdown_api();
+    p8_unmap_lua_script();
 
     p8_close_cartdata();
 
@@ -385,15 +422,20 @@ int p8_shutdown()
     SDL_FreeSurface(m_screen);
     SDL_Quit();
 
-    free(m_cart_memory);
+    // Never free m_memory or m_cart_memory on Cardputer to avoid fragmentation
+#ifndef IS_CARDPUTER
     free(m_memory);
+#endif
     free(m_overlay_memory);
 #else
-    rh_free(m_cart_memory);
+    // Never free m_memory or m_cart_memory on Cardputer to avoid fragmentation
+#ifndef IS_CARDPUTER
     rh_free(m_memory);
+#endif
     rh_free(m_overlay_memory);
 #endif
 
+    // m_cart_memory is intentionally not freed on Cardputer
     m_initialized = 0;
 
     return 0;
@@ -540,7 +582,7 @@ void p8_render()
     SDL_SoftStretch(m_output, NULL, m_screen, &rect);
     SDL_Flip(m_screen);
 }
-#else
+#elif !defined(SDL) && !defined(IS_CARDPUTER)
 
 void draw_complete(bool underflow, void *user_data)
 {
@@ -573,20 +615,15 @@ void p8_render()
                 uint8_t right = (*screen_mem) >> 4;
 
                 uint8_t index_left = pal[left];
-                uint8_t index_right = color_pal[right];
+                uint8_t index_right = pal[right];
 
-                uint16_t c_left = m_colors[color_index(index_left)];
-                uint16_t c_right = m_colors[color_index(index_right)];
+                uint32_t pixels = (m_colors[index_left] << 16) | m_colors[index_right];
 
-                *top++ = c_left;
-                *top++ = c_left;
-                *top++ = c_right;
-                *top++ = c_right;
+                *((uint32_t *)top) = pixels;
+                *((uint32_t *)bottom) = pixels;
 
-                *bottom++ = c_left;
-                *bottom++ = c_left;
-                *bottom++ = c_right;
-                *bottom++ = c_right;
+                top += 2;
+                bottom += 2;
 
                 screen_mem++;
 
@@ -596,18 +633,13 @@ void p8_render()
                 index_left = pal[left];
                 index_right = pal[right];
 
-                c_left = m_colors[color_index(index_left)];
-                c_right = m_colors[color_index(index_right)];
+                pixels = (m_colors[index_left] << 16) | m_colors[index_right];
 
-                *top++ = c_left;
-                *top++ = c_left;
-                *top++ = c_right;
-                *top++ = c_right;
+                *((uint32_t *)top) = pixels;
+                *((uint32_t *)bottom) = pixels;
 
-                *bottom++ = c_left;
-                *bottom++ = c_left;
-                *bottom++ = c_right;
-                *bottom++ = c_right;
+                top += 2;
+                bottom += 2;
 
                 screen_mem++;
 
@@ -617,18 +649,13 @@ void p8_render()
                 index_left = pal[left];
                 index_right = pal[right];
 
-                c_left = m_colors[color_index(index_left)];
-                c_right = m_colors[color_index(index_right)];
+                pixels = (m_colors[index_left] << 16) | m_colors[index_right];
 
-                *top++ = c_left;
-                *top++ = c_left;
-                *top++ = c_right;
-                *top++ = c_right;
+                *((uint32_t *)top) = pixels;
+                *((uint32_t *)bottom) = pixels;
 
-                *bottom++ = c_left;
-                *bottom++ = c_left;
-                *bottom++ = c_right;
-                *bottom++ = c_right;
+                top += 2;
+                bottom += 2;
 
                 screen_mem++;
 
@@ -638,97 +665,19 @@ void p8_render()
                 index_left = pal[left];
                 index_right = pal[right];
 
-                c_left = m_colors[color_index(index_left)];
-                c_right = m_colors[color_index(index_right)];
+                pixels = (m_colors[index_left] << 16) | m_colors[index_right];
 
-                *top++ = c_left;
-                *top++ = c_left;
-                *top++ = c_right;
+                *((uint32_t *)top) = pixels;
+                *((uint32_t *)bottom) = pixels;
 
-                *bottom++ = c_left;
-                *bottom++ = c_right;
-                *bottom++ = c_right;
+                top += 2;
+                bottom += 2;
 
                 screen_mem++;
             }
-
-            output += 480;
         }
         else
         {
-            uint16_t *top = output;
-
-            for (int x = 0; x < 128; x += 8)
-            {
-
-                uint8_t left = (*screen_mem) & 0xF;
-                uint8_t right = (*screen_mem) >> 4;
-
-                uint8_t index_left = pal[left];
-                uint8_t index_right = pal[right];
-
-                uint16_t c_left = m_colors[color_index(index_left)];
-                uint16_t c_right = m_colors[color_index(index_right)];
-
-                *top++ = c_left;
-                *top++ = c_left;
-                *top++ = c_right;
-                *top++ = c_right;
-
-                screen_mem++;
-
-                left = (*screen_mem) & 0xF;
-                right = (*screen_mem) >> 4;
-
-                index_left = pal[left];
-                index_right = pal[right];
-
-                c_left = m_colors[color_index(index_left)];
-                c_right = m_colors[color_index(index_right)];
-
-                *top++ = c_left;
-                *top++ = c_left;
-                *top++ = c_right;
-                *top++ = c_right;
-
-                screen_mem++;
-
-                left = (*screen_mem) & 0xF;
-                right = (*screen_mem) >> 4;
-
-                index_left = pal[left];
-                index_right = pal[right];
-
-                c_left = m_colors[color_index(index_left)];
-                c_right = m_colors[color_index(index_right)];
-
-                *top++ = c_left;
-                *top++ = c_left;
-                *top++ = c_right;
-                *top++ = c_right;
-
-                screen_mem++;
-
-                left = (*screen_mem) & 0xF;
-                right = (*screen_mem) >> 4;
-
-                index_left = pal[left];
-                index_right = pal[right];
-
-                c_left = m_colors[color_index(index_left)];
-                c_right = m_colors[color_index(index_right)];
-
-                *top++ = c_left;
-                *top++ = c_left;
-                *top++ = c_right;
-
-                screen_mem++;
-            }
-
-            output += 240;
-        }
-    }
-
     output = gdi_get_frame_buffer_addr(HW_LCDC_LAYER_0);
 
     for (int y = 1; y <= P8_HEIGHT; y++)
@@ -994,6 +943,9 @@ void p8_update_input()
             break;
         }
     }
+#elif defined(IS_CARDPUTER)
+    extern void m5stack_update_input();
+    m5stack_update_input();
 #else
     uint16_t mask = 0;
 
@@ -1116,41 +1068,56 @@ void p8_flip()
     p8_post_flip();
 }
 
-static void p8_main_loop()
+void p8_step()
 {
-    int time_debt = 0;
-    unsigned updates_since_last_flip = 0;
+    static int time_debt = 0;
+    static unsigned updates_since_last_flip = 0;
+    const int target_frame_time = 1000 / m_fps;
 
-    for (;;)
-    {
-        const int target_frame_time = 1000 / m_fps;
+    unsigned t0 = millis();
+    lua_update();
+    
+    // Explicitly step the garbage collector to prevent heap fragmentation in low memory
+    extern void p8_lua_gc_step(void);
+    p8_lua_gc_step();
+    
+    unsigned t1 = millis();
+    updates_since_last_flip++;
 
-        lua_update();
-        updates_since_last_flip++;
+    unsigned elapsed = p8_elapsed_time();
+    unsigned t2 = 0, t3 = 0, t4 = 0;
 
-        unsigned elapsed = p8_elapsed_time();
+    time_debt += elapsed;
 
-        time_debt += elapsed;
+    if (time_debt < target_frame_time || updates_since_last_flip >= m_fps) {
+        t2 = millis();
+        lua_draw();
+        t3 = millis();
+        time_debt += p8_elapsed_time() - elapsed;
 
-        if (time_debt < target_frame_time || updates_since_last_flip >= m_fps) {
-            lua_draw();
-            time_debt += p8_elapsed_time() - elapsed;
+        p8_flip();
+        t4 = millis();
 
-            p8_flip();
-
-            if (updates_since_last_flip >= m_fps) {
-                time_debt = 0;
-            } else {
-                time_debt -= target_frame_time;
-                if (time_debt < -target_frame_time) time_debt = -target_frame_time;
-            }
-
-            updates_since_last_flip = 0;
+        if (updates_since_last_flip >= m_fps) {
+            time_debt = 0;
         } else {
-            p8_post_flip();
-
             time_debt -= target_frame_time;
+            if (time_debt < -target_frame_time) time_debt = -target_frame_time;
         }
+
+        updates_since_last_flip = 0;
+    } else {
+        p8_post_flip();
+        time_debt -= target_frame_time;
+        // フレームスキップ時もm_start_timeをリセットしないとp8_elapsed_timeが爆発するバグを修正
+        extern p8_clock_t m_start_time;
+        m_start_time = p8_clock();
+    }
+    
+    static int p_count = 0;
+    p_count++;
+    if (p_count % 30 == 0) {
+        printf("Prof: update=%ums, draw=%ums, flip=%ums, debt=%d\n", t1-t0, t3-t2, t4-t3, time_debt);
     }
 }
 
@@ -1421,3 +1388,12 @@ void p8_show_version_dialog(void)
     p8_dialog_cleanup(&dialog);
 }
 
+void p8_suspend_memory_for_lua_compile(void)
+{
+    // Do not free m_memory here. Freeing 32KB of SRAM causes fatal fragmentation.
+}
+
+void p8_resume_memory_after_lua_compile(void)
+{
+    // Memory is loaded directly into m_memory now. m_cart_memory is gone.
+}
