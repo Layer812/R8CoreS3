@@ -74,10 +74,12 @@ M5Burnerのシェアコード検索から簡単にインストールできます
 ## 🩹 Game Patch Compatibility / ゲームパッチ対応リスト
 
 The following games require a `.p8t` patch to run on RONTO8 due to their cartridge size.  
-Patch files are available in the [`carts/`](carts/) folder of this repository.
+Patch files are available in the [`carts/`](carts/) folder of this repository.  
+**Note: These patches modify the game's internal processing to save memory and ensure compatibility with the Cardputer. As a result, the behavior and visuals may differ slightly from the original unpatched version.**
 
 以下のゲームはカートリッジサイズの関係でROMの書き替えが必要なため、`.p8t` パッチが必要です。  
-パッチファイルはリポジトリの [`carts/`](carts/) フォルダに収録されています。
+パッチファイルはリポジトリの [`carts/`](carts/) フォルダに収録されています。  
+**注意：これらのパッチはCardputerでの動作と省メモリ化を実現するために、ゲーム内部の処理を変更しています。そのため、オリジナル版とは動作や見た目が一部異なる場合があります。**
 
 | Game / ゲーム | Author | PICO-8 BBS | Patch File |
 |---|---|---|---|
