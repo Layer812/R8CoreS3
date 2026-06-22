@@ -2458,12 +2458,17 @@ static void print_script_context(int lineno)
 
 void lua_print_error(const char *where)
 {
+    extern char g_last_error_message[256];
+    extern bool g_emulator_crashed;
+    
     printf("Error on %s\r\n", where);
 
     if (lua_isstring(L, -1))
     {
         const char *message = lua_tostring(L, -1);
         printf("%s\r\n", message);
+        snprintf(g_last_error_message, 256, "%s: %s", where, message);
+        
         // Extract line number from error string like "...:1292:"
         const char *colon = message;
         int lineno = 0;
@@ -2475,7 +2480,11 @@ void lua_print_error(const char *where)
             colon++;
         }
         print_script_context(lineno);
+    } else {
+        snprintf(g_last_error_message, 256, "Error: %s", where);
     }
+    
+    g_emulator_crashed = true;
 }
 
 void lua_init_script(const char *file_name, const char *script)

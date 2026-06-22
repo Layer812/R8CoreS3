@@ -362,6 +362,47 @@ int p8_init_file_with_param(const char *file_name, const char *param)
         return -1;
     }
 
+    extern char g_cart_title[32];
+    extern char g_cart_author[32];
+    g_cart_title[0] = '\0';
+    g_cart_author[0] = '\0';
+
+    if (file_name) {
+        const char *slash = strrchr(file_name, '/');
+        const char *base = slash ? slash + 1 : file_name;
+        strncpy(g_cart_title, base, 31);
+        g_cart_title[31] = '\0';
+        char *dot = strrchr(g_cart_title, '.');
+        if (dot) *dot = '\0';
+    }
+
+    if (lua_script) {
+        const char *p = lua_script;
+        while (*p == ' ' || *p == '\r' || *p == '\n') p++;
+        if (p[0] == '-' && p[1] == '-') {
+            p += 2;
+            while (*p == ' ') p++;
+            int i = 0;
+            while (*p && *p != '\n' && *p != '\r' && i < 31) {
+                g_cart_title[i++] = *p++;
+            }
+            g_cart_title[i] = '\0';
+            while (*p && *p != '\n') p++;
+            if (*p == '\n') p++;
+
+            while (*p == ' ' || *p == '\r') p++;
+            if (p[0] == '-' && p[1] == '-') {
+                p += 2;
+                while (*p == ' ') p++;
+                i = 0;
+                while (*p && *p != '\n' && *p != '\r' && i < 31) {
+                    g_cart_author[i++] = *p++;
+                }
+                g_cart_author[i] = '\0';
+            }
+        }
+    }
+
     char *patched_script_to_free = NULL;
     if (lua_script) {
         char p8t_path[256];

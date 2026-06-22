@@ -420,17 +420,58 @@ static inline void draw_scaled_sprite(int sx, int sy, int sw, int sh, int dx, in
     if (dw <= 0 || dh <= 0)
         return;
 
-    for (int y = 0; y < dh; y++)
+    int cx, cy;
+    camera_get(&cx, &cy);
+    int x0, y0, x1, y1;
+    clip_get(&x0, &y0, &x1, &y1);
+
+    int screen_dx = dx - cx;
+    int screen_dy = dy - cy;
+
+    if (screen_dx >= x1 || screen_dy >= y1 || screen_dx + dw <= x0 || screen_dy + dh <= y0)
+        return;
+
+    int start_y = (screen_dy < y0) ? (y0 - screen_dy) : 0;
+    int end_y = (screen_dy + dh > y1) ? (y1 - screen_dy) : dh;
+    int start_x = (screen_dx < x0) ? (x0 - screen_dx) : 0;
+    int end_x = (screen_dx + dw > x1) ? (x1 - screen_dx) : dw;
+
+    if (start_y >= end_y || start_x >= end_x) return;
+
+    uint32_t step_x = (sw << 16) / dw;
+    uint32_t step_y = (sh << 16) / dh;
+
+    uint32_t start_v = start_y * step_y;
+    uint32_t start_u = start_x * step_x;
+
+    bool fillp_sprites = (m_memory[MEMORY_FILLP_ATTR] & 2) != 0;
+
+    uint32_t v = start_v;
+    for (int y = start_y; y < end_y; y++)
     {
-        for (int x = 0; x < dw; x++)
+        int screen_y = screen_dy + y;
+        int mapped_y = flip_y ? (sh - 1 - (v >> 16)) : (v >> 16);
+        int src_y = sy + mapped_y;
+        v += step_y;
+
+        uint32_t u = start_u;
+        for (int x = start_x; x < end_x; x++)
         {
-            int src_x = sx + (flip_x ? (sw - 1 - (x * sw) / dw) : (x * sw) / dw);
-            int src_y = sy + (flip_y ? (sh - 1 - (y * sh) / dh) : (y * sh) / dh);
+            int screen_x = screen_dx + x;
+            int mapped_x = flip_x ? (sw - 1 - (u >> 16)) : (u >> 16);
+            int src_x = sx + mapped_x;
+            u += step_x;
+
             uint8_t index = gfx_get(src_x, src_y, MEMORY_SPRITES, MEMORY_SPRITES_SIZE);
             uint8_t color = color_get(PALTYPE_DRAW, (int)index);
 
-            if ((color & 0xf0) == 0)
-                pixel_set(dx + x, dy + y, index, 0, DRAWTYPE_SPRITE);
+            if ((color & 0xf0) == 0) {
+                if (!fillp_sprites) {
+                    gfx_set(screen_x, screen_y, MEMORY_SCREEN, MEMORY_SCREEN_SIZE, color & 0x0f);
+                } else {
+                    pixel_set(dx + x, dy + y, index, 0, DRAWTYPE_SPRITE);
+                }
+            }
         }
     }
 }

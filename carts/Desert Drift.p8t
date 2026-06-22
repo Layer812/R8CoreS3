@@ -94,6 +94,26 @@ end
 [/]
 
 [SEARCH]
+  for i=3,#segments do
+    -- white sticks
+    if (i%8==0) then
+     add_bb(6,i,470)
+     add_bb(6,i,-470)
+    end
+    id=2
+    if (rnd()>0.8) id=1
+    if (rnd()>0.8) id=4
+    add_bb(id,i,500+rnd(2000))
+    id=2
+    if (rnd()>0.8) id=1
+    if (rnd()>0.8) id=4
+    add_bb(id,i,-600-rnd(2000))
+   end
+[REPLACE]
+  -- skip debris to save memory
+[/]
+
+[SEARCH]
 function add_seg(curve,y)
  local cols={6,13}
  local n=#segments

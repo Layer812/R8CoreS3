@@ -30,6 +30,13 @@ static volatile bool g_emulator_ready = false;
 static volatile bool g_emulator_init_failed = false;
 static volatile bool g_audio_task_started = false;
 
+extern "C" {
+    char g_last_error_message[256] = {0};
+    bool g_emulator_crashed = false;
+    char g_cart_title[32] = {0};
+    char g_cart_author[32] = {0};
+}
+
 
 // frame_buf has been removed to save 32KB SRAM
 
@@ -124,8 +131,10 @@ static void draw_browser()
     }
 
     M5Cardputer.Display.setTextSize(1);
-    M5Cardputer.Display.setCursor(5, 120);
+    M5Cardputer.Display.setCursor(5, 115);
     M5Cardputer.Display.println("UP: W/; DOWN: S/. ENTER: Open");
+    M5Cardputer.Display.setCursor(5, 125);
+    M5Cardputer.Display.println("BS: Back");
 }
 
 static String browse_for_rom()
@@ -146,6 +155,7 @@ static String browse_for_rom()
         bool left = false;
         bool right = false;
         bool enter = ks.enter || ks.space;
+        bool bs = ks.del;
 
         for (char c : ks.word) {
             if (c == 'w' || c == 'W' || c == 'u' || c == 'U' || c == ';') up = true;
@@ -170,6 +180,17 @@ static String browse_for_rom()
             if (g_browser_cursor >= g_browser_count) g_browser_cursor = g_browser_count - 1;
             if (g_browser_cursor < 0) g_browser_cursor = 0; // Check for 0 elements
             draw_browser();
+        } else if (bs) {
+            if (g_browser_path != "/" && g_browser_path != "/sd" && g_browser_path != "/sd/") {
+                int last_slash = g_browser_path.lastIndexOf('/', g_browser_path.length() - 2);
+                if (last_slash >= 0) {
+                    g_browser_path = g_browser_path.substring(0, last_slash + 1);
+                } else {
+                    g_browser_path = "/";
+                }
+                scan_browser_directory(g_browser_path);
+                draw_browser();
+            }
         } else if (enter && g_browser_count > 0) {
             if (g_browser_is_dir[g_browser_cursor]) {
                 if (g_browser_entries[g_browser_cursor] == "..") {
@@ -459,6 +480,10 @@ void setup()
         M5Cardputer.Display.print("START:");
         M5Cardputer.Display.setCursor(5, 100);
         M5Cardputer.Display.print(" P/ENT");
+        M5Cardputer.Display.setCursor(5, 110);
+        M5Cardputer.Display.print("BACK:BS");
+        M5Cardputer.Display.setCursor(5, 120);
+        M5Cardputer.Display.print("VOL: +/-");
 
         // Clear the PICO-8 screen area to black with "Loading" text
         M5Cardputer.Display.fillRect(56, 3, 128, 128, TFT_BLACK);
@@ -488,19 +513,68 @@ void loop() {
     M5Cardputer.Keyboard.updateKeyList();
     M5Cardputer.Keyboard.updateKeysState();
 
-    if (g_emulator_init_failed) {
+    auto& ks = M5Cardputer.Keyboard.keysState();
+
+    if (g_emulator_crashed || g_emulator_init_failed) {
         static bool shown = false;
         if (!shown) {
             shown = true;
-            M5Cardputer.Display.fillScreen(TFT_BLACK);
-            M5Cardputer.Display.setCursor(0, 0);
-            M5Cardputer.Display.println("ROM init failed.");
-            M5Cardputer.Display.println("Please choose another cart.");
+            uint16_t box_color = M5Cardputer.Display.color565(200, 0, 0); // Red
+            M5Cardputer.Display.fillRect(20, 20, 200, 95, TFT_BLACK);
+            M5Cardputer.Display.drawRect(20, 20, 200, 95, box_color);
+            M5Cardputer.Display.drawRect(21, 21, 198, 93, box_color);
+            M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+            M5Cardputer.Display.setTextSize(1);
+            M5Cardputer.Display.setCursor(25, 25);
+            M5Cardputer.Display.println("EMULATOR ERROR:");
+            M5Cardputer.Display.setCursor(25, 40);
+            if (strlen(g_last_error_message) > 0) {
+                M5Cardputer.Display.println(g_last_error_message);
+            } else {
+                M5Cardputer.Display.println("ROM init failed or crashed.");
+            }
+            M5Cardputer.Display.setCursor(25, 90);
+            M5Cardputer.Display.println("Press BS or ENTER to reboot");
+        }
+        if (ks.del || ks.enter || ks.space) {
+            ESP.restart();
         }
     } else if (g_emulator_ready && !g_audio_task_started) {
+        uint16_t r4_yellow = M5Cardputer.Display.color565(253, 192, 0);
+        M5Cardputer.Display.fillRect(185, 0, 55, 135, r4_yellow);
+        M5Cardputer.Display.setTextColor(TFT_BLACK, r4_yellow);
+        M5Cardputer.Display.setTextSize(1);
+        String t = g_cart_title;
+        String a = g_cart_author;
+        if (t.length() > 9) t = t.substring(0, 9);
+        if (a.length() > 9) a = a.substring(0, 9);
+        M5Cardputer.Display.setCursor(186, 5);
+        M5Cardputer.Display.println(t);
+        if (a.length() > 0) {
+            M5Cardputer.Display.setCursor(186, 15);
+            M5Cardputer.Display.println(a);
+        }
+
         xTaskCreatePinnedToCore(audio_task, "audio_task", 4096, NULL, configMAX_PRIORITIES - 1, NULL, 0);
         g_audio_task_started = true;
     } else if (g_emulator_ready) {
+        if (ks.del) {
+            ESP.restart();
+        }
+        
+        static int s_volume = 255;
+        for (char c : ks.word) {
+            if (c == '+' || c == '=') {
+                s_volume += 15;
+                if (s_volume > 255) s_volume = 255;
+                M5Cardputer.Speaker.setVolume(s_volume);
+            } else if (c == '-' || c == '_') {
+                s_volume -= 15;
+                if (s_volume < 0) s_volume = 0;
+                M5Cardputer.Speaker.setVolume(s_volume);
+            }
+        }
+
         p8_step();
     }
 
