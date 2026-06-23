@@ -1,0 +1,78 @@
+[SEARCH]
+function noise(sx,sy,startscale,scalemod,featstep)
+
+	local n = {}
+	for i=0,sx do
+		n[i] = {}
+		for j=0,sy do
+			n[i][j] = 0.5
+		end
+	end
+[REPLACE]
+function noise(sx,sy,startscale,scalemod,featstep,n)
+
+	for i=0,sx do
+		if not n[i] then n[i] = {} end
+		for j=0,sy do
+			n[i][j] = 0.5
+		end
+	end
+[/]
+[SEARCH]
+function createmapstep(sx,sy,a,b,c,d,e)
+
+	local cur = noise(sx,sy,0.9,0.2,sx)
+	local cur2 = noise(sx,sy,0.9,0.4,8)
+	local cur3 = noise(sx,sy,0.9,0.3,8)
+	local cur4 = noise(sx,sy,0.8,1.1,4)
+[REPLACE]
+global_n1 = global_n1 or {}
+global_n2 = global_n2 or {}
+global_n3 = global_n3 or {}
+global_n4 = global_n4 or {}
+
+function createmapstep(sx,sy,a,b,c,d,e)
+
+	local cur = noise(sx,sy,0.9,0.2,sx,global_n1)
+	local cur2 = noise(sx,sy,0.9,0.4,8,global_n2)
+	local cur3 = noise(sx,sy,0.9,0.3,8,global_n3)
+	local cur4 = noise(sx,sy,0.8,1.1,4,global_n4)
+[/]
+[SEARCH]
+	holex = levelsx/2+levelx
+	holey = levelsy/2+levely
+	for i=-1,1 do
+		for j=-1,1 do
+			mset(holex+i,holey+j,((levelunder) and 1 or 3))
+		end
+	end
+	mset(holex,holey,11)
+	
+	clx = plx
+[REPLACE]
+	holex = levelsx/2+levelx
+	holey = levelsy/2+levely
+	for i=-1,1 do
+		for j=-1,1 do
+			mset(holex+i,holey+j,((levelunder) and 1 or 3))
+		end
+	end
+	mset(holex,holey,11)
+
+	global_n1 = nil
+	global_n2 = nil
+	global_n3 = nil
+	global_n4 = nil
+	
+	clx = plx
+[/]
+[SEARCH]
+	nearenemies={}
+
+	local ebx = cos(prot)
+[REPLACE]
+	nearenemies = nearenemies or {}
+	for i=1,#nearenemies do nearenemies[i]=nil end
+
+	local ebx = cos(prot)
+[/]

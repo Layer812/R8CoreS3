@@ -1,0 +1,55 @@
+[SEARCH]
+  elseif dead then
+    foreach(objects, function(obj)
+      destroy_object(obj)
+    end)
+    if btnp(k_attack, 0) then
+[REPLACE]
+  elseif dead then
+    foreach(objects, destroy_object)
+    if btnp(k_attack, 0) then
+[/]
+[SEARCH]
+    --update each object
+    	foreach(objects, function(obj)
+    		obj.move(obj.spd.x,obj.spd.y)
+        obj.move(obj.kick.x,obj.kick.y)
+    		obj.type.update(obj)
+    	end)
+      foreach(players, function(obj)
+    		obj.move(obj.spd.x,obj.spd.y)
+        obj.move(obj.kick.x,obj.kick.y)
+    		obj.type.update(obj)
+    	end)
+[REPLACE]
+    --update each object
+      local function upd_obj(obj)
+        obj.move(obj.spd.x,obj.spd.y)
+        obj.move(obj.kick.x,obj.kick.y)
+        obj.type.update(obj)
+      end
+    	foreach(objects, upd_obj)
+      foreach(players, upd_obj)
+[/]
+[SEARCH]
+      --draw objects
+      foreach(objects, function(o)
+    		draw_object(o)
+    	end)
+      foreach(players, function(o)
+    		draw_object(o)
+    	end)
+[REPLACE]
+      --draw objects
+      foreach(objects, draw_object)
+      foreach(players, draw_object)
+[/]
+[SEARCH]
+function build_new_room()
+  foreach(objects, function(obj)
+    destroy_object(obj)
+  end)
+[REPLACE]
+function build_new_room()
+  foreach(objects, destroy_object)
+[/]

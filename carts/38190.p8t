@@ -1,0 +1,10 @@
+-- 38190.p8t patch: Mario clone memory optimization
+-- Fix 1: my() function creates a local ne={} table every call for collision detection.
+-- Vertical collision checks happen for every entity every frame.
+-- We replace the wasteful pattern with direct indexed iteration over a fixed-size reused table.
+[SEARCH]
+function my(bz,ca,fs,ek,en,ge,nb) local nd=en<0 and 3 or 1 local is=(fs/8)-1 local ne={} add(ne,nd) for n=1,is do add(ne,n*8-1) end add(ne,fs-nd) for n in all(ne) do local er=flr((bz+n)/8) local es=flr((ca+en)/8) local nc=fget(em(er,es)) if nc!=0 then
+[REPLACE]
+_my_ne={}
+function my(bz,ca,fs,ek,en,ge,nb) local nd=en<0 and 3 or 1 local is=(fs/8)-1 local ne=_my_ne local nc2=0 ne[nc2+1]=nd nc2+=1 for n=1,is do ne[nc2+1]=n*8-1 nc2+=1 end ne[nc2+1]=fs-nd nc2+=1 for ni=1,nc2 do local n=ne[ni] local er=flr((bz+n)/8) local es=flr((ca+en)/8) local nc=fget(em(er,es)) if nc!=0 then
+[/]

@@ -1,0 +1,54 @@
+[SEARCH]
+		foreach(ent, function(e) 
+			if (e.rad ~= nil and e ~= p and e.cantpush == nil) then 
+				local rad = (e.rad+p.rad)/256
+				local dist = dist2(e,p)
+				if (dist2(e, p) < rad*rad) then
+					if (e == car and p.scrt == 0) then
+						addscore(p.x,p.y,5)
+						p.scrt = 10
+						sfx(0,3)
+					end
+					local xp = (p.x-e.x)
+					p.rv += xp*(rad*rad-dist)*256/100
+					local yp = (p.y-e.y)
+					p.xv += xp*(rad*rad-dist)*51.2
+					p.yv += yp*(rad*rad-dist)*51.2
+				end
+			end 
+		end)
+[REPLACE]
+		local function chk(e)
+			if (e and e.rad ~= nil and e ~= p and e.cantpush == nil) then 
+				local rad = (e.rad+p.rad)/256
+				local dist = dist2(e,p)
+				if (dist < rad*rad) then
+					if (e == car and p.scrt == 0) then
+						addscore(p.x,p.y,5)
+						p.scrt = 10
+						sfx(0,3)
+					end
+					local xp = (p.x-e.x)
+					p.rv += xp*(rad*rad-dist)*256/100
+					local yp = (p.y-e.y)
+					p.xv += xp*(rad*rad-dist)*51.2
+					p.yv += yp*(rad*rad-dist)*51.2
+				end
+			end 
+		end
+		chk(car)
+		chk(ply)
+[/]
+[SEARCH]
+		foreach(ent, function(e) 
+			if (e.rad ~= nil and e ~= p) then 
+				local rad = (e.rad+p.rad)/256
+				local dist = dist2(e,p)
+				if (dist2(e, p) < rad*rad) then
+[REPLACE]
+		foreach(ent, function(e) 
+			if (e.rad ~= nil and e ~= p) then 
+				local rad = (e.rad+p.rad)/256
+				local dist = dist2(e,p)
+				if (dist < rad*rad) then
+[/]

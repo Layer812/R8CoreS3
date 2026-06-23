@@ -92,6 +92,16 @@ Patch files are available in the [`carts/`](carts/) folder of this repository.
 |---|---|---|---|
 | Desert Drift | [johanp](https://www.lexaloffle.com/bbs/?uid=15227) | [#31685](https://www.lexaloffle.com/bbs/?tid=31685) | [`Desert Drift.p8t`](carts/Desert%20Drift.p8t) |
 | 東方運命の星 (Touhou Unmei no Hoshi) | [Nallebeorn](https://www.lexaloffle.com/bbs/?uid=33240) | [#36992](https://www.lexaloffle.com/bbs/?tid=36992) | [`unh-3.p8t`](carts/unh-3.p8t) |
+| We Missed You! (LD33 compo) | Rhys | [#2322](https://www.lexaloffle.com/bbs/?tid=2322) | [`13021.p8t`](carts/13021.p8t) |
+| underworld siege (LD33) | benjamin_soule | [#2319](https://www.lexaloffle.com/bbs/?tid=2319) | [`13025.p8t`](carts/13025.p8t) |
+| Celeste | noel | [#2145](https://www.lexaloffle.com/bbs/?tid=2145) | [`15133.p8t`](carts/15133.p8t) |
+| The Wee Dungeon 1.2.3 | Parlor | [#3072](https://www.lexaloffle.com/bbs/?tid=3072) | [`19532.p8t`](carts/19532.p8t) |
+| Mistigri | benjamin_soule | [#3421](https://www.lexaloffle.com/bbs/?tid=3421) | [`21603.p8t`](carts/21603.p8t) |
+| The Slow and the Curious | emu | [#3597](https://www.lexaloffle.com/bbs/?tid=3597) | [`23035.p8t`](carts/23035.p8t) |
+| P.Craft | NuSan | [#3200](https://www.lexaloffle.com/bbs/?tid=3200) | [`24981.p8t`](carts/24981.p8t) |
+| Wizardish - A First-Person Grid-Based Dungeon Crawler! v2.1 tiny update | Eduardolicious | [#3585](https://www.lexaloffle.com/bbs/?tid=3585) | [`27415.p8t`](carts/27415.p8t) |
+| Pico Fox | electricgryphon | [#28067](https://www.lexaloffle.com/bbs/?tid=28067) | [`32479.p8t`](carts/32479.p8t) |
+| Super Mario Bros. | Sascha217 | [#28942](https://www.lexaloffle.com/bbs/?tid=28942) | [`38190.p8t`](carts/38190.p8t) |
 
 > More patches coming soon! / 今後も対応ゲームを追加予定です。
 

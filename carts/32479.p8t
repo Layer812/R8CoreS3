@@ -1,0 +1,87 @@
+-- 32479.p8t patch: Pico Fox 3D memory optimization
+-- The game creates a new table for every triangle every frame (dozens per frame).
+-- Fix: Replace triangle_list with a pool-based system using a count variable.
+-- Instead of triangle_list={}, we reset the count to 0 and reuse existing tables.
+[SEARCH]
+function new_triangle(p1x,p1y,p2x,p2y,p3x,p3y,z,c1,c2)
+	t={}
+	t.p1x=p1x
+	t.p1y=p1y
+	t.p2x=p2x
+	t.p2y=p2y
+	t.p3x=p3x
+	t.p3y=p3y
+	t.z=z
+	t.c1=c1
+	t.c2=c2
+
+	add(triangle_list,t)
+end
+
+function draw_triangle_list()
+	for t in all(triangle_list) do		
+		solid_trifill( t.p1x,t.p1y,t.p2x,t.p2y,t.p3x,t.p3y, t.c1,t.c2 )
+	end
+end
+[REPLACE]
+triangle_pool={}
+triangle_count=0
+
+function new_triangle(p1x,p1y,p2x,p2y,p3x,p3y,z,c1,c2)
+	triangle_count+=1
+	local t=triangle_pool[triangle_count]
+	if not t then
+		t={}
+		triangle_pool[triangle_count]=t
+	end
+	t.p1x=p1x
+	t.p1y=p1y
+	t.p2x=p2x
+	t.p2y=p2y
+	t.p3x=p3x
+	t.p3y=p3y
+	t.z=z
+	t.c1=c1
+	t.c2=c2
+	triangle_list[triangle_count]=t
+end
+
+function draw_triangle_list()
+	for i=1,triangle_count do
+		local t=triangle_list[i]
+		solid_trifill( t.p1x,t.p1y,t.p2x,t.p2y,t.p3x,t.p3y, t.c1,t.c2 )
+	end
+end
+[/]
+[SEARCH]
+	object_list={}
+	triangle_list={}
+[REPLACE]
+	object_list={}
+	triangle_list={}
+	triangle_count=0
+[/]
+[SEARCH]
+		triangle_list={}
+		transform_object(title_ship)
+[REPLACE]
+		triangle_count=0
+		transform_object(title_ship)
+[/]
+[SEARCH]
+		triangle_list={}
+		render_object(ground)
+		render_object(player_shadow)
+		
+		draw_triangle_list()
+		render_ground_dots()
+		triangle_list={}
+[REPLACE]
+		triangle_count=0
+		render_object(ground)
+		render_object(player_shadow)
+		
+		draw_triangle_list()
+		render_ground_dots()
+		triangle_count=0
+[/]
