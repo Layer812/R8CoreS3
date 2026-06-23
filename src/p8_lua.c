@@ -2511,25 +2511,37 @@ void lua_init_script(const char *file_name, const char *script)
     m5stack_suspend_frame_buf();
 #endif
 
+int ret;
+    // ==========================================
+    if (strncmp(script, "SD_FILE:", 8) == 0) {
+        const char *filepath = script + 8;
+        printf("--- Streaming directly from SD: %s ---\n", filepath);
+        ret = luaL_loadfile(L, filepath);
+    } 
+    else {
+        // 
 #ifndef OS_FREERTOS
-    // Prepend newlines so Lua's line numbers match the original .p8 file.
-    // The Lua section starts at line 4 (after the 3-line pico-8 header), so
-    // prepend 3 newlines to make line 1 of the script appear as line 4.
-    size_t script_len = strlen(script);
-    char *padded_script = malloc(3 + script_len + 1);
-    padded_script[0] = padded_script[1] = padded_script[2] = '\n';
-    memcpy(padded_script + 3, script, script_len + 1);
-    int ret = luaL_loadbuffer(L, padded_script, 3 + script_len, temp_file_name);
-    free(s_saved_script);
-    s_saved_script = padded_script;
-#else
-    size_t script_len = strlen(script);
-    int ret = luaL_loadbuffer(L, script, script_len, temp_file_name);
-    if (s_saved_script) {
+        // Prepend newlines so Lua's line numbers match the original .p8 file.
+        // The Lua section starts at line 4 (after the 3-line pico-8 header), so
+        // prepend 3 newlines to make line 1 of the script appear as line 4.
+        size_t script_len = strlen(script);
+        char *padded_script = malloc(3 + script_len + 1);
+        padded_script[0] = padded_script[1] = padded_script[2] = '\n';
+        memcpy(padded_script + 3, script, script_len + 1);
+        ret = luaL_loadbuffer(L, padded_script, 3 + script_len, temp_file_name);
         free(s_saved_script);
-        s_saved_script = NULL;
-    }
+        s_saved_script = padded_script;
+#else
+        size_t script_len = strlen(script);
+        ret = luaL_loadbuffer(L, script, script_len, temp_file_name);
+        if (s_saved_script) {
+            free(s_saved_script);
+            s_saved_script = NULL;
+        }
 #endif
+    } //
+    // ==========================================
+    
     
     // --- MEMORY BREATHING: Resume large buffers after compiling ---
 #ifdef OS_FREERTOS
@@ -2563,7 +2575,7 @@ void lua_init_script(const char *file_name, const char *script)
 
     // Tune GC for low memory environment to prevent fragmentation
     lua_gc(L, LUA_GCSETPAUSE, 100);    // Start GC immediately after a cycle
-    lua_gc(L, LUA_GCSETSTEPMUL, 1000); // Make GC run extremely fast to clear temporary objects
+    lua_gc(L, LUA_GCSETSTEPMUL, 1200); // Make GC run extremely fast to clear temporary objects
 
     lua_getglobal(L, "_update");
 

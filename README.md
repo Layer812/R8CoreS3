@@ -1,6 +1,6 @@
-# RONTO8 for M5Cardputer (v0.52)
+# RONTO8 for M5Cardputer (v0.53)
 
-![RONTO8 - Desert Drift](dd.gif)
+![RONTO8 - SMB](smb.gif)
 
 RONTO8 is an experimental PICO-8 compatible fantasy console emulator specially designed and optimized for the **M5Stack Cardputer**. It is based on [femto8](https://github.com/benbaker76/femto8) and [zepto8](https://github.com/samhocevar/zepto8), bringing the joy of portable PICO-8 gaming and coding to this compact, ESP32-S3-powered device.
 
@@ -28,11 +28,12 @@ RONTO8は、**M5Stack Cardputer** 専用に設計および最適化された PIC
 
 ## 📝 Changelog / 更新履歴
 
-### v0.52
+### v0.53
+- **SMB ROM Support**: Added support for Super Mario Bros (Clone). Implemented massive memory optimizations including SD streaming compilation and direct VRAM rendering patches to ensure stability. (SMBロムに対応。SDストリーミングコンパイルとVRAM直接描画パッチの実装により、メモリ制限を突破し動作の安定性を劇的に向上。)
 
+### v0.52
 - **Volume Control**: Added volume control functionality using `+` and `-` keys. (ボリューム機能の追加)
 - **Error Handling**: Added visual error handling and a red screen halt when Lua errors occur. (エラー処理追加)
-
 
 ### v0.5
 - **High-speed Emulation**: Tuned Lua compiler and garbage collector to overcome memory limitations of embedded systems. (組み込み環境のメモリ制限を克服するため、Luaコンパイラとガベージコレクションを徹底的にチューニング。)
@@ -55,10 +56,10 @@ RONTO8は、**M5Stack Cardputer** 専用に設計および最適化された PIC
 
 ### Via M5Burner (Recommended)
 You can easily install RONTO8 using M5Burner with the following share code:
-- **Share Code**: `rSROLPWU9dGIuN3I`
+- **Share Code**: `7YPwG8kVxNWh5mFg`
 
 M5Burnerのシェアコード検索から簡単にインストールできます：
-- **シェアコード**: `rSROLPWU9dGIuN3I`
+- **シェアコード**: `7YPwG8kVxNWh5mFg`
 
 ### Building from Source / ソースからビルドする場合
 
@@ -101,6 +102,7 @@ Patch files are available in the [`carts/`](carts/) folder of this repository.
 | P.Craft | NuSan | [#3200](https://www.lexaloffle.com/bbs/?tid=3200) | [`24981.p8t`](carts/24981.p8t) |
 | Wizardish - A First-Person Grid-Based Dungeon Crawler! v2.1 tiny update | Eduardolicious | [#3585](https://www.lexaloffle.com/bbs/?tid=3585) | [`27415.p8t`](carts/27415.p8t) |
 | Pico Fox | electricgryphon | [#28067](https://www.lexaloffle.com/bbs/?tid=28067) | [`32479.p8t`](carts/32479.p8t) |
+| Super Mario Bros (Clone) | Spoke | [#38190](https://www.lexaloffle.com/bbs/?tid=38190) | [38190.p8t](https://gemini.google.com/carts/38190.p8t)|
 
 > More patches coming soon! / 今後も対応ゲームを追加予定です。
 

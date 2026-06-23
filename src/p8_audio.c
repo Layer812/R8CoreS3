@@ -35,7 +35,7 @@
 #define VOLUME_SHIFT 9
 #define WAVEFORM_SHIFT 6
 
-#define PCM_BUFFER_SIZE 2048
+#define PCM_BUFFER_SIZE 1024
 
 enum
 {

@@ -402,6 +402,7 @@ int parse_cart_file(const char *file_name, uint8_t *memory, const char **lua_scr
             *lua_script = expanded;
         }
     }
+    
 
     return 0;
 }

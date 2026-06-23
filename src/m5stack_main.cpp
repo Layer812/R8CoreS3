@@ -8,6 +8,7 @@
 #include <SD.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <Preferences.h>
 
 extern "C" {
 #include "p8_emu.h"
@@ -20,15 +21,25 @@ extern void render_sounds(int16_t *buffer, int total_samples);
 
 extern unsigned m_actual_fps;
 
-static constexpr int MAX_BROWSER_ENTRIES = 128;
-static String g_browser_entries[MAX_BROWSER_ENTRIES];
-static bool g_browser_is_dir[MAX_BROWSER_ENTRIES];
+static constexpr int MAX_BROWSER_ENTRIES = 256;
+static constexpr int MAX_BROWSER_BUF_SIZE = 4096;
+
+static char* g_browser_name_buf = nullptr;
+static uint16_t* g_browser_name_offsets = nullptr;
+static bool* g_browser_is_dir = nullptr;
+static int g_browser_buf_used = 0;
+
+static String g_browser_path = "/";
+static volatile bool g_scan_complete = false;
 static int g_browser_count = 0;
 static int g_browser_cursor = 0;
-static String g_browser_path = "/";
+static int g_cursor_history[10] = {0};
+static int g_depth = 0;
 static volatile bool g_emulator_ready = false;
 static volatile bool g_emulator_init_failed = false;
 static volatile bool g_audio_task_started = false;
+
+int g_volume = 255;
 
 extern "C" {
     char g_last_error_message[256] = {0};
@@ -36,9 +47,6 @@ extern "C" {
     char g_cart_title[32] = {0};
     char g_cart_author[32] = {0};
 }
-
-
-// frame_buf has been removed to save 32KB SRAM
 
 static bool is_rom_file(const String& name)
 {
@@ -51,14 +59,17 @@ static void scan_browser_directory(const String& path)
 {
     g_browser_count = 0;
     g_browser_cursor = 0;
+    g_browser_buf_used = 0;
 
     File dir = SD.open(path.c_str());
     if (!dir || !dir.isDirectory())
         return;
 
     if (path != "/" && path != "/sd" && path != "/sd/" && g_browser_count < MAX_BROWSER_ENTRIES) {
-        g_browser_entries[g_browser_count] = "..";
+        strcpy(g_browser_name_buf + g_browser_buf_used, "..");
+        g_browser_name_offsets[g_browser_count] = g_browser_buf_used;
         g_browser_is_dir[g_browser_count] = true;
+        g_browser_buf_used += 3;
         g_browser_count++;
     }
 
@@ -68,26 +79,25 @@ static void scan_browser_directory(const String& path)
             break;
 
         String name = entry.name();
+        bool is_dir = entry.isDirectory();
+        entry.close();
+
         if (name == "." || name == "..") {
-            entry.close();
             continue;
         }
 
-        if (entry.isDirectory()) {
+        if (is_dir || is_rom_file(name)) {
             if (g_browser_count < MAX_BROWSER_ENTRIES) {
-                g_browser_entries[g_browser_count] = name;
-                g_browser_is_dir[g_browser_count] = true;
-                g_browser_count++;
-            }
-        } else if (is_rom_file(name)) {
-            if (g_browser_count < MAX_BROWSER_ENTRIES) {
-                g_browser_entries[g_browser_count] = name;
-                g_browser_is_dir[g_browser_count] = false;
-                g_browser_count++;
+                int len = name.length();
+                if (g_browser_buf_used + len + 1 < MAX_BROWSER_BUF_SIZE) {
+                    strcpy(g_browser_name_buf + g_browser_buf_used, name.c_str());
+                    g_browser_name_offsets[g_browser_count] = g_browser_buf_used;
+                    g_browser_is_dir[g_browser_count] = is_dir;
+                    g_browser_buf_used += len + 1;
+                    g_browser_count++;
+                }
             }
         }
-
-        entry.close();
     }
 
     dir.close();
@@ -100,17 +110,16 @@ static void draw_browser()
     M5Cardputer.Display.setTextColor(TFT_BLACK, r4_yellow);
 
     M5Cardputer.Display.setCursor(5, 5);
-    M5Cardputer.Display.setTextSize(2); // Make title font larger
+    M5Cardputer.Display.setTextSize(2);
     M5Cardputer.Display.println("R8 ROM BROWSER");
     M5Cardputer.Display.setTextSize(1);
     M5Cardputer.Display.setCursor(5, 25);
     M5Cardputer.Display.println(g_browser_path);
 
-    // Draw black border around file list
     M5Cardputer.Display.drawRect(2, 35, 236, 80, TFT_BLACK);
     
-    M5Cardputer.Display.setTextSize(2); // Make font larger
-    int visible = 5; // Reduced visible items due to larger font
+    M5Cardputer.Display.setTextSize(2);
+    int visible = 5;
     int start = 0;
     if (g_browser_count > visible) {
         if (g_browser_cursor >= visible)
@@ -123,10 +132,14 @@ static void draw_browser()
     for (int i = start; i < start + visible && i < g_browser_count; i++) {
         M5Cardputer.Display.setCursor(6, y_pos);
         M5Cardputer.Display.print(i == g_browser_cursor ? ">" : " ");
-        if (g_browser_is_dir[i])
-            M5Cardputer.Display.println(String("[" + g_browser_entries[i] + "]").c_str());
-        else
-            M5Cardputer.Display.println(g_browser_entries[i].c_str());
+        const char* entry_name = g_browser_name_buf + g_browser_name_offsets[i];
+        if (g_browser_is_dir[i]) {
+            M5Cardputer.Display.print("[");
+            M5Cardputer.Display.print(entry_name);
+            M5Cardputer.Display.println("]");
+        } else {
+            M5Cardputer.Display.println(entry_name);
+        }
         y_pos += 16;
     }
 
@@ -139,9 +152,15 @@ static void draw_browser()
 
 static String browse_for_rom()
 {
+    g_browser_name_buf = (char*)malloc(MAX_BROWSER_BUF_SIZE);
+    g_browser_name_offsets = (uint16_t*)malloc(MAX_BROWSER_ENTRIES * sizeof(uint16_t));
+    g_browser_is_dir = (bool*)malloc(MAX_BROWSER_ENTRIES * sizeof(bool));
+
     g_browser_path = "/";
     scan_browser_directory(g_browser_path);
     draw_browser();
+
+    String selected_file = "";
 
     while (true) {
         M5Cardputer.update();
@@ -150,10 +169,7 @@ static String browse_for_rom()
 
         auto& ks = M5Cardputer.Keyboard.keysState();
 
-        bool up = false;
-        bool down = false;
-        bool left = false;
-        bool right = false;
+        bool up = false, down = false, left = false, right = false;
         bool enter = ks.enter || ks.space;
         bool bs = ks.del;
 
@@ -178,7 +194,7 @@ static String browse_for_rom()
         } else if (right) {
             g_browser_cursor += 5;
             if (g_browser_cursor >= g_browser_count) g_browser_cursor = g_browser_count - 1;
-            if (g_browser_cursor < 0) g_browser_cursor = 0; // Check for 0 elements
+            if (g_browser_cursor < 0) g_browser_cursor = 0;
             draw_browser();
         } else if (bs) {
             if (g_browser_path != "/" && g_browser_path != "/sd" && g_browser_path != "/sd/") {
@@ -188,38 +204,64 @@ static String browse_for_rom()
                 } else {
                     g_browser_path = "/";
                 }
+                if (g_depth > 0) {
+                    g_depth--;
+                    g_browser_cursor = g_cursor_history[g_depth];
+                } else {
+                    g_browser_cursor = 0;
+                }
                 scan_browser_directory(g_browser_path);
                 draw_browser();
             }
         } else if (enter && g_browser_count > 0) {
             if (g_browser_is_dir[g_browser_cursor]) {
-                if (g_browser_entries[g_browser_cursor] == "..") {
+                const char* entry_name = g_browser_name_buf + g_browser_name_offsets[g_browser_cursor];
+                if (strcmp(entry_name, "..") == 0) {
                     int last_slash = g_browser_path.lastIndexOf('/', g_browser_path.length() - 2);
                     if (last_slash >= 0) {
                         g_browser_path = g_browser_path.substring(0, last_slash + 1);
                     } else {
                         g_browser_path = "/";
                     }
+                    if (g_depth > 0) {
+                        g_depth--;
+                        g_browser_cursor = g_cursor_history[g_depth];
+                    }
                 } else {
+                    if (g_depth < 10) {
+                        g_cursor_history[g_depth] = g_browser_cursor;
+                        g_depth++;
+                    }
                     String next = g_browser_path;
                     if (!next.endsWith("/")) next += "/";
-                    next += g_browser_entries[g_browser_cursor];
+                    next += entry_name;
                     g_browser_path = next;
+                    g_browser_cursor = 0;
                 }
                 scan_browser_directory(g_browser_path);
                 draw_browser();
             } else {
-                return g_browser_path + (g_browser_path.endsWith("/") ? "" : "/") + g_browser_entries[g_browser_cursor];
+                const char* entry_name = g_browser_name_buf + g_browser_name_offsets[g_browser_cursor];
+                selected_file = g_browser_path + (g_browser_path.endsWith("/") ? "" : "/") + entry_name;
+                break;
             }
         }
-
         delay(50);
     }
+
+    free(g_browser_name_buf);
+    free(g_browser_name_offsets);
+    free(g_browser_is_dir);
+    g_browser_name_buf = nullptr;
+    g_browser_name_offsets = nullptr;
+    g_browser_is_dir = nullptr;
+
+    return selected_file;
 }
 
 static void audio_task(void *pvParameters)
 {
-    const int sample_count = 512;
+    const int sample_count = 256;
     int16_t *audio_buf[2];
     audio_buf[0] = (int16_t *)malloc(sample_count * sizeof(int16_t));
     audio_buf[1] = (int16_t *)malloc(sample_count * sizeof(int16_t));
@@ -232,14 +274,11 @@ static void audio_task(void *pvParameters)
     }
 
     int current_buf = 0;
-
     while (1) {
         render_sounds(audio_buf[current_buf], sample_count);
-
-        while (!M5Cardputer.Speaker.playRaw(audio_buf[current_buf], sample_count, 44100, false, 1, 0)) {
+        while (!M5Cardputer.Speaker.playRaw(audio_buf[current_buf], sample_count, 22050, false, 1, 0)) {
             vTaskDelay(pdMS_TO_TICKS(1));
         }
-
         current_buf = 1 - current_buf;
     }
 }
@@ -271,9 +310,7 @@ static void emulator_init_task(void *pvParameters)
 
 extern "C" void m5stack_update_input()
 {
-
     uint8_t mask = 0;
-
     auto& ks = M5Cardputer.Keyboard.keysState();
 
     if (ks.enter) mask |= 32; // X
@@ -285,8 +322,8 @@ extern "C" void m5stack_update_input()
         if (c == 'w' || c == 'W' || c == 0x01 || c == ';') mask |= 4; // UP
         if (c == 's' || c == 'S' || c == 0x02 || c == '.') mask |= 8; // DOWN
         if (c == '\n' || c == '\r' || c == 'x' || c == 'X' || c == 'k' || c == 'K') mask |= 32; // X
-        if (c == ' ' || c == 'z' || c == 'Z' || c == 'v' || c == 'V') mask |= 16; // O
-        if (c == 0x1b || c == '\t' || c == 'm' || c == 'M') mask |= 64; // START
+        if (c == ' ' || c == 'z' || c == 'Z' || c == 'v' || c == 'V' || c == 'n' || c == 'N') mask |= 16; // O
+        if (c == 0x1b || c == '\t' || c == 'm' || c == 'M' || c == 'p' || c == 'P') mask |= 64; // START
     }
 
     m_buttons[0] = mask;
@@ -295,13 +332,11 @@ extern "C" void m5stack_update_input()
 extern "C" void m5stack_suspend_frame_buf(void) { }
 extern "C" void m5stack_resume_frame_buf(void) { }
 
-
 extern "C" void p8_render()
 {
     if (!m_memory) return;
     uint8_t* vram = &m_memory[0x6000]; // VRAM starts at 0x6000
     
-    // Decode 4-bit indexed colors to 16-bit RGB565 into a local line buffer
     const int LINE_BUFFER_HEIGHT = 8;
     uint16_t line_buffer[128 * LINE_BUFFER_HEIGHT];
     
@@ -344,14 +379,13 @@ void show_ronto8_splash() {
 
     M5Cardputer.Display.setTextSize(1);
     M5Cardputer.Display.setCursor(10, 65);
-    M5Cardputer.Display.println("RONTO8, creating a nu wave in the fantasy console scene.");
+    M5Cardputer.Display.println("RONTO8,a nu wave in the pico8 console.");
     M5Cardputer.Display.setCursor(10, 75);
-    M5Cardputer.Display.println("Powering beyond hardware limitations, high-speed emulation");
+    M5Cardputer.Display.println("Powering beyond hardware limitations");
     M5Cardputer.Display.setCursor(10, 85);
-    M5Cardputer.Display.println("and advanced dynamics accelerate the rush of portable coding.");
-
+    M5Cardputer.Display.println("and adv acceler8 the portable coding.");
     M5Cardputer.Display.setCursor(10, 120);
-    M5Cardputer.Display.print("(C)2026 RONTO8. BASED ON FEMTO8 & ZEPTO8.");
+    M5Cardputer.Display.print("(C)RONTO8. BASED ON FEMTO8 & ZEPTO8.");
 
     while (true) {
         M5Cardputer.update();
@@ -369,33 +403,13 @@ void show_ronto8_splash() {
         }
         M5Cardputer.Display.setTextSize(1);
         M5Cardputer.Display.setCursor(60, 105);
-        M5Cardputer.Display.print("*PRESS ANY KEY");
+        M5Cardputer.Display.print("  PRESS ANY KEY");
 
         delay(50);
     }
-    
-    // 画面を黒ではなく黄色にクリアし、レターボックス（左右56pxずつ）に装飾を描画
-    M5Cardputer.Display.fillScreen(r4_yellow);
-    M5Cardputer.Display.setTextColor(TFT_BLACK, r4_yellow);
-    M5Cardputer.Display.setTextSize(2);
-    M5Cardputer.Display.setCursor(5, 5);
-    M5Cardputer.Display.print("R8");
-    
-    M5Cardputer.Display.setTextSize(1);
-    M5Cardputer.Display.setCursor(5, 30);
-    M5Cardputer.Display.print("DIR:");
-    M5Cardputer.Display.setCursor(5, 40);
-    M5Cardputer.Display.print(" ;.,/");
-    M5Cardputer.Display.setCursor(5, 50);
-    M5Cardputer.Display.print(" WASD");
-    M5Cardputer.Display.setCursor(5, 65);
-    M5Cardputer.Display.print("O: Z/N");
-    M5Cardputer.Display.setCursor(5, 75);
-    M5Cardputer.Display.print("X: X/M");
-    M5Cardputer.Display.setCursor(5, 90);
-    M5Cardputer.Display.print("START:");
-    M5Cardputer.Display.setCursor(5, 100);
-    M5Cardputer.Display.print(" P/ENT");
+    M5Cardputer.Display.setCursor(60, 105);
+    M5Cardputer.Display.print("  loading...     ");
+//    M5Cardputer.Display.fillScreen(r4_yellow);
 }
 
 void setup()
@@ -404,10 +418,6 @@ void setup()
     delay(3000); // Wait for serial monitor to connect
     Serial.println("--- M5CARDPUTER BOOT ---");
     
-    // Allocate frame_buf and m_memory here when the heap is completely free, 
-    // to guarantee we get large contiguous blocks (96KB total).
-    // frame_buf allocation removed. m_memory is allocated elsewhere.
-
     extern unsigned char *m_memory;
     if (!m_memory) {
         m_memory = (uint8_t *)malloc(MEMORY_SIZE); // 32KB
@@ -435,9 +445,6 @@ void setup()
     M5Cardputer.Display.fillScreen(TFT_BLACK);
     M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
     M5Cardputer.Display.setTextSize(1);
-    M5Cardputer.Display.setCursor(0, 0);
-
-    delay(500);
 
     SPI.begin(40, 39, 14, 12);
     int retries = 0;
@@ -458,7 +465,6 @@ void setup()
     if (found_file != "") {
         if (!found_file.startsWith("/")) found_file = "/" + found_file;
         
-        // Draw letterbox background again just before loading, to clear browser
         uint16_t r4_yellow = M5Cardputer.Display.color565(253, 192, 0);
         M5Cardputer.Display.fillScreen(r4_yellow);
         M5Cardputer.Display.setTextColor(TFT_BLACK, r4_yellow);
@@ -485,26 +491,23 @@ void setup()
         M5Cardputer.Display.setCursor(5, 120);
         M5Cardputer.Display.print("VOL: +/-");
 
-        // Clear the PICO-8 screen area to black with "Loading" text
         M5Cardputer.Display.fillRect(56, 3, 128, 128, TFT_BLACK);
         M5Cardputer.Display.setTextColor(TFT_WHITE, TFT_BLACK);
         M5Cardputer.Display.setCursor(60, 60);
         M5Cardputer.Display.print("Loading...");
 
         String vfs_path = "/sd" + found_file;
-
         char* param_path = strdup(vfs_path.c_str());
         g_emulator_ready = false;
         g_emulator_init_failed = false;
 
-        xTaskCreatePinnedToCore(emulator_init_task, "emulator_init_task", 8192, (void *)param_path, 2, NULL, 1);
+        xTaskCreatePinnedToCore(emulator_init_task, "emulator_init_task", 6144, (void *)param_path, 2, NULL, 1);
 
         return;
     } else {
         M5Cardputer.Display.println("No ROM selected.");
     }
 
-    M5Cardputer.Display.println("\nHalting. Please check SD card.");
     while(1) { delay(100); }
 }
 
@@ -519,7 +522,7 @@ void loop() {
         static bool shown = false;
         if (!shown) {
             shown = true;
-            uint16_t box_color = M5Cardputer.Display.color565(200, 0, 0); // Red
+            uint16_t box_color = M5Cardputer.Display.color565(200, 0, 0);
             M5Cardputer.Display.fillRect(20, 20, 200, 95, TFT_BLACK);
             M5Cardputer.Display.drawRect(20, 20, 200, 95, box_color);
             M5Cardputer.Display.drawRect(21, 21, 198, 93, box_color);

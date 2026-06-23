@@ -418,7 +418,7 @@ int p8_init_file_with_param(const char *file_name, const char *param)
         if (!dot_p8) dot_p8 = strstr(p8t_path, ".P8");
         if (dot_p8) *dot_p8 = '\0';
         
-#if 0
+#if 1
         // debug 
 	char dump_orig_path[256];
         snprintf(dump_orig_path, sizeof(dump_orig_path), "%s_orig.lua", p8t_path);
@@ -436,11 +436,11 @@ int p8_init_file_with_param(const char *file_name, const char *param)
         strcat(p8t_path, ".p8t");
         
         printf("Checking for patch file: %s\n", p8t_path);
-        char *patched_script = apply_p8t_patch(lua_script, p8t_path);
+	char *patched_script = apply_p8t_patch(lua_script, p8t_path);
         if (patched_script) {
             printf("Applied patch: %s\n", p8t_path);
-#if 0            
-      	    // debug
+#if 1            
+            // debug
             char dump_patch_path[256];
             // 拡張子を除いたベースパスを取得してファイル名を作成
             char base_path[256];
@@ -454,13 +454,33 @@ int p8_init_file_with_param(const char *file_name, const char *param)
                 fwrite(patched_script, 1, strlen(patched_script), f_patch);
                 fclose(f_patch);
                 printf("Saved patched script to: %s\n", dump_patch_path);
+
+                // ==========================================
+                // 【究極のハック】ここでパッチ済みの巨大な文字列を解放する！
+#ifdef OS_FREERTOS
+                rh_free(patched_script);
+                char *sd_inst = (char *)rh_malloc(256);
+#else
+                free(patched_script);
+                char *sd_inst = (char *)malloc(256);
+#endif
+                snprintf(sd_inst, 256, "SD_FILE:%s", dump_patch_path);
+                
+                // ここで確実にポインタを渡す
+                lua_script = sd_inst;
+                patched_script_to_free = sd_inst;
+                // ==========================================
+
             } else {
                 printf("Failed to save patched script.\n");
+                lua_script = patched_script;
+                patched_script_to_free = patched_script;
             }
-            // ==========================================
-#endif
+#else
+            // debugモード(#if 1)をオフにした場合のフォールバック
             lua_script = patched_script;
             patched_script_to_free = patched_script;
+#endif
         } else {
             printf("Patch file %s not found or failed to apply.\n", p8t_path);
         }
