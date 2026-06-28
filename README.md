@@ -1,8 +1,10 @@
 # RONTO8 for M5Stack CoreS3 (v0.53)
 
-RONTO8 is an experimental PICO-8 compatible fantasy console emulator specially designed and optimized for the **M5Stack CoreS3**. It is based on [femto8](https://github.com/benbaker76/femto8) and [zepto8](https://github.com/samhocevar/zepto8), bringing the joy of portable PICO-8 gaming and coding to this powerful device.
+![RONTO8 - Touhou](toho.gif)
 
-RONTO8は、**M5Stack CoreS3** 専用に設計および最適化された PICO-8 互換のファンタジーコンソールエミュレータ（実験バージョン）です。[femto8](https://github.com/benbaker76/femto8) と [zepto8](https://github.com/samhocevar/zepto8) をベースにしており、このパワフルなデバイスでPICO-8のゲームやコーディングの楽しさを持ち歩くことができます。
+RONTO8 is an experimental PICO-8 compatible fantasy console emulator specially designed and optimized for the [**M5Stack CoreS3**](https://docs.m5stack.com/ja/core/CoreS3). It is based on [femto8](https://github.com/benbaker76/femto8) and [zepto8](https://github.com/samhocevar/zepto8), bringing the joy of portable PICO-8 gaming and coding to this powerful device.
+
+RONTO8は、[**M5Stack CoreS3**](https://docs.m5stack.com/ja/core/CoreS3) 専用に設計および最適化された PICO-8 互換のファンタジーコンソールエミュレータ（実験バージョン）です。[femto8](https://github.com/benbaker76/femto8) と [zepto8](https://github.com/samhocevar/zepto8) をベースにしており、このパワフルなデバイスでPICO-8のゲームやコーディングの楽しさを持ち歩くことができます。
 
 ---
 
@@ -21,15 +23,13 @@ RONTO8は、**M5Stack CoreS3** 専用に設計および最適化された PICO-8
   - SDカードから `.p8.png` や `.p8` 形式のカートリッジを直接ロード可能。
 - **Audio Support**: Enhanced audio synthesis for authentic PICO-8 SFX and Music playback.
   - PICO-8特有の効果音（SFX）やBGMを再現するオーディオエンジンを搭載。
-- **Game Patch System**: Apply `.p8t` patch files at startup to make larger cartridges run on RONTO8.
-  - 起動時に `.p8t` パッチファイルを適用し、大きめのカートリッジをROMとして動作させるゲームパッチ機能。
 
 ## 🎮 Controls / 操作方法
 
 - **Touch Screen / タッチスクリーン**: A virtual gamepad is displayed on the screen. (画面上に仮想コントローラーが表示されます)
   - **D-Pad / 方向キー**: Left side of the screen (画面左側)
-  - **Button O**: Top right (画面右上)
-  - **Button X**: Bottom right (画面右下)
+  - **Button O**: Top right (画面右上). Hold for 1 second to lock the button state. (1秒長押しでボタンが押された状態にロックされます)
+  - **Button X**: Bottom right (画面右下). Hold for 1 second to lock the button state. (1秒長押しでボタンが押された状態にロックされます)
   - **Start / Pause**: Bottom center (画面下部中央)
   - **Volume**: Left edge volume buttons (画面左端のボリュームボタン)
 
@@ -56,9 +56,6 @@ M5Burnerのシェアコード検索から簡単にインストールできます
 3. Prepare the SD Card:
    Place your `.p8.png` or `.p8` files on the root or in a folder on your MicroSD card and insert it into the CoreS3.
    - MicroSDカードのルートやフォルダ内に `.p8.png` または `.p8` ファイルを置き、CoreS3に挿入してください。
-4. (Optional) Game Patches:
-   Patch files (`.p8t`) for supported games are included in the `carts/` folder. Place the `.p8t` file with the **same filename** as the ROM in the same folder on your SD card. The patch will be applied automatically at startup.
-   - 対応ゲームのパッチファイル（`.p8t`）は `carts/` フォルダに収録されています。SDカード上でROMと**同じフォルダ・同じファイル名**で `.p8t` ファイルを置くと、起動時に自動的に適用されます。
 
 ## 🙏 Credits and Acknowledgments / 謝辞
 
