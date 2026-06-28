@@ -35,11 +35,11 @@ RONTO8は、[**M5Stack CoreS3**](https://docs.m5stack.com/ja/core/CoreS3) 専用
 
 ## ⚙️ Installation / インストール
 
-### Via M5Burner (Recommended)
-You can easily install RONTO8 using M5Burner with the following share code:
+### Via [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/intro) (Recommended)
+You can easily install RONTO8 using [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/intro) with the following share code:
 - **Share Code**: `Aal9ORnRiU38eDUm`
 
-M5Burnerのシェアコード検索から簡単にインストールできます：
+[M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/intro)のシェアコード検索から簡単にインストールできます：
 - **シェアコード**: `Aal9ORnRiU38eDUm`
 
 ### Building from Source / ソースからビルドする場合
