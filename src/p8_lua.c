@@ -112,8 +112,8 @@ int circ(lua_State *L)
     int fillp = lua_gettop(L) >= 4 ? (fix32_bits(lua_tonumber(L, 4)) & 0xffff) : 0;
 
     if (lua_gettop(L) >= 3 && (m_memory[MEMORY_MISCFLAGS] & 0x2)) {
-        double r_real = fix32_to_double(lua_tonumber(L, 3));
-        if (r_real - r >= 0.5)
+        float r_real = fix32_to_float(lua_tonumber(L, 3));
+        if (r_real - r >= 0.5f)
             r++;
     }
 
@@ -135,8 +135,8 @@ int circfill(lua_State *L)
     int fillp = lua_gettop(L) >= 4 ? (fix32_bits(lua_tonumber(L, 4)) & 0xffff) : 0;
 
     if (lua_gettop(L) >= 3 && (m_memory[MEMORY_MISCFLAGS] & 0x2)) {
-        double r_real = fix32_to_double(lua_tonumber(L, 3));
-        if (r_real - r >= 0.5)
+        float r_real = fix32_to_float(lua_tonumber(L, 3));
+        if (r_real - r >= 0.5f)
             r++;
     }
 
@@ -746,8 +746,8 @@ int spr(lua_State *L)
         else
         {
             // Fractional w/h: compute pixel dimensions and draw at 1:1 scale
-            int sw = (int)(fix32_to_double(w_raw) * SPRITE_WIDTH + 0.5);
-            int sh = (int)(fix32_to_double(h_raw) * SPRITE_HEIGHT + 0.5);
+            int sw = (int)(fix32_to_float(w_raw) * SPRITE_WIDTH + 0.5f);
+            int sh = (int)(fix32_to_float(h_raw) * SPRITE_HEIGHT + 0.5f);
             int ssx = (n & 0xF) * SPRITE_WIDTH;
             int ssy = (n >> 4) * SPRITE_HEIGHT;
             draw_scaled_sprite(ssx, ssy, sw, sh, x, y, 1.0f, 1.0f, flip_x, flip_y);
@@ -1393,6 +1393,25 @@ int peek4(lua_State *L)
 
     return n;
 }
+#define POKE_FIFO_SIZE 512
+static uint8_t poke_fifo[POKE_FIFO_SIZE];
+static int poke_fifo_head = 0;
+static int poke_fifo_tail = 0;
+
+static void push_poke_fifo(uint8_t val) {
+    int next = (poke_fifo_head + 1) % POKE_FIFO_SIZE;
+    if (next != poke_fifo_tail) {
+        poke_fifo[poke_fifo_head] = val;
+        poke_fifo_head = next;
+    }
+}
+
+static int pop_poke_fifo(uint8_t *val) {
+    if (poke_fifo_head == poke_fifo_tail) return 0;
+    *val = poke_fifo[poke_fifo_tail];
+    poke_fifo_tail = (poke_fifo_tail + 1) % POKE_FIFO_SIZE;
+    return 1;
+}
 
 // poke(addr, val1, ...)
 int poke(lua_State *L)
@@ -1404,8 +1423,12 @@ int poke(lua_State *L)
     for (int i=2;i<=lua_gettop(L);++i) {
         unsigned val = lua_tounsigned(L, i);
 
-        if (addr + i - 2 < 0x8000)
+        if (addr == 0xffff || (int)addr == -1) {
+            push_poke_fifo(val & 0xff);
+        }
+        else if (addr + i - 2 < 0x8000) {
             m_memory[addr + i-2] = val;
+        }
     }
 
     if (addr >= MEMORY_CARTDATA && addr + 1 <= MEMORY_CARTDATA + MEMORY_CARTDATA_SIZE)
@@ -1530,23 +1553,16 @@ int rnd(lua_State *L)
         }
     }
 
-    uint32_t hi = m_memory[MEMORY_RNG_STATE] | (m_memory[MEMORY_RNG_STATE + 1] << 8) |
-                  (m_memory[MEMORY_RNG_STATE + 2] << 16) | (m_memory[MEMORY_RNG_STATE + 3] << 24);
-    uint32_t lo = m_memory[MEMORY_RNG_STATE + 4] | (m_memory[MEMORY_RNG_STATE + 5] << 8) |
-                  (m_memory[MEMORY_RNG_STATE + 6] << 16) | (m_memory[MEMORY_RNG_STATE + 7] << 24);
+    uint32_t *rng_state = (uint32_t *)&m_memory[MEMORY_RNG_STATE];
+    uint32_t hi = rng_state[0];
+    uint32_t lo = rng_state[1];
 
     hi = (hi << 16) | (hi >> 16);
     hi += lo;
     lo += hi;
 
-    m_memory[MEMORY_RNG_STATE] = hi & 0xFF;
-    m_memory[MEMORY_RNG_STATE + 1] = (hi >> 8) & 0xFF;
-    m_memory[MEMORY_RNG_STATE + 2] = (hi >> 16) & 0xFF;
-    m_memory[MEMORY_RNG_STATE + 3] = (hi >> 24) & 0xFF;
-    m_memory[MEMORY_RNG_STATE + 4] = lo & 0xFF;
-    m_memory[MEMORY_RNG_STATE + 5] = (lo >> 8) & 0xFF;
-    m_memory[MEMORY_RNG_STATE + 6] = (lo >> 16) & 0xFF;
-    m_memory[MEMORY_RNG_STATE + 7] = (lo >> 24) & 0xFF;
+    rng_state[0] = hi;
+    rng_state[1] = lo;
 
     if (is_table)
     {
@@ -1728,8 +1744,14 @@ int extcmd(lua_State *L)
         p8_show_pause_menu();
     } else if (strcmp(cmd, "reset") == 0) {
         p8_restart();
+#if defined(OS_FREERTOS)
+        return luaL_error(L, "restart");
+#endif
     } else if (strcmp(cmd, "shutdown") == 0) {
         p8_abort();
+#if defined(OS_FREERTOS)
+        return luaL_error(L, "abort");
+#endif
     } else {
         fprintf(stderr, "unsupported extcmd command: %s\n", cmd);
     }
@@ -1749,6 +1771,10 @@ int __attribute__ ((noreturn)) run(lua_State *L)
     m_param_string = (lua_gettop(L) >= 1) ? lua_tostring(L, 1) : "";
 
     p8_restart();
+#if defined(OS_FREERTOS)
+    return luaL_error(L, "restart");
+#endif
+    return 0;
 }
 
 // load(filename [,breadcrumb] [,param])
@@ -1818,6 +1844,10 @@ int _load(lua_State *L)
     m_load_result = 1;
     p8_load_new(resolved_path, param);
     free(resolved_path);
+
+#if defined(OS_FREERTOS)
+    return luaL_error(L, "load");
+#endif
 
     lua_pushboolean(L, 1);
     return 1;
@@ -2201,11 +2231,182 @@ int serial(lua_State *L)
     case 0x808:
         // PCM audio output
 #ifdef ENABLE_AUDIO
-        audio_pcm_write(address, length);
+        if (address == 0xffff || (int32_t)address == -1) {
+            while (length > 0) {
+                uint8_t val;
+                if (pop_poke_fifo(&val)) {
+                    audio_pcm_write_byte(val);
+                }
+                length--;
+            }
+        } else {
+            audio_pcm_write(address, length);
+        }
 #endif
         break;
     }
 
+    return 0;
+}
+
+// all() implementation
+static int pico8_all_iter_empty(lua_State *L) {
+    return 0;
+}
+
+static int pico8_all_iter_string(lua_State *L) {
+    int i = lua_tointeger(L, lua_upvalueindex(2)) + 1;
+    size_t len;
+    const char *s = lua_tolstring(L, lua_upvalueindex(1), &len);
+
+    if (i <= (int)len) {
+        lua_pushinteger(L, i);
+        lua_replace(L, lua_upvalueindex(2));
+
+        lua_pushlstring(L, s + i - 1, 1);
+        return 1;
+    }
+    return 0;
+}
+
+static int pico8_all_iter_table(lua_State *L) {
+    int i = lua_tointeger(L, lua_upvalueindex(2));
+
+    lua_rawgeti(L, lua_upvalueindex(1), i);
+    int is_equal = lua_rawequal(L, -1, lua_upvalueindex(3));
+    lua_pop(L, 1);
+
+    if (is_equal) {
+        i++;
+    }
+
+    lua_rawgeti(L, lua_upvalueindex(1), i);
+    if (!lua_isnil(L, -1)) {
+        lua_pushinteger(L, i);
+        lua_replace(L, lua_upvalueindex(2));
+
+        lua_pushvalue(L, -1);
+        lua_replace(L, lua_upvalueindex(3));
+
+        return 1;
+    }
+    lua_pop(L, 1);
+    return 0;
+}
+
+int pico8_all(lua_State *L) {
+    if (lua_isnoneornil(L, 1)) {
+        lua_pushcclosure(L, pico8_all_iter_empty, 0);
+        return 1;
+    }
+
+    if (lua_type(L, 1) == LUA_TSTRING) {
+        lua_pushvalue(L, 1);
+        lua_pushinteger(L, 0);
+        lua_pushcclosure(L, pico8_all_iter_string, 2);
+        return 1;
+    }
+
+    if (lua_type(L, 1) != LUA_TTABLE) {
+        lua_pushcclosure(L, pico8_all_iter_empty, 0);
+        return 1;
+    }
+
+    lua_pushvalue(L, 1);
+    lua_pushinteger(L, 0);
+    lua_pushnil(L);
+    lua_pushcclosure(L, pico8_all_iter_table, 3);
+    return 1;
+}
+
+int pico8_add(lua_State *L) {
+    if (!lua_istable(L, 1)) return 0;
+    int len = lua_rawlen(L, 1);
+    if (lua_gettop(L) >= 3 && !lua_isnil(L, 3)) {
+        int index = lua_tointeger(L, 3);
+        for (int j = len; j >= index; j--) {
+            lua_rawgeti(L, 1, j);
+            lua_rawseti(L, 1, j + 1);
+        }
+        lua_pushvalue(L, 2);
+        lua_rawseti(L, 1, index);
+    } else {
+        lua_pushvalue(L, 2);
+        lua_rawseti(L, 1, len + 1);
+    }
+    lua_pushvalue(L, 2);
+    return 1;
+}
+
+int pico8_del(lua_State *L) {
+    if (!lua_istable(L, 1)) return 0;
+    int len = lua_rawlen(L, 1);
+    int found_idx = 0;
+    for (int i = 1; i <= len; i++) {
+        lua_rawgeti(L, 1, i);
+        if (lua_rawequal(L, 2, -1)) {
+            found_idx = i;
+            lua_pop(L, 1);
+            break;
+        }
+        lua_pop(L, 1);
+    }
+    if (found_idx > 0) {
+        for (int i = found_idx; i <= len; i++) {
+            lua_rawgeti(L, 1, i + 1);
+            lua_rawseti(L, 1, i);
+        }
+        lua_pushvalue(L, 2);
+        return 1;
+    }
+    return 0;
+}
+
+int pico8_deli(lua_State *L) {
+    if (!lua_istable(L, 1)) return 0;
+    int len = lua_rawlen(L, 1);
+    int i = len;
+    if (lua_gettop(L) >= 2 && !lua_isnil(L, 2)) {
+        i = lua_tointeger(L, 2);
+    }
+    if (i < 1 || i > len) return 0;
+    lua_rawgeti(L, 1, i);
+    for (int j = i; j <= len; j++) {
+        lua_rawgeti(L, 1, j + 1);
+        lua_rawseti(L, 1, j);
+    }
+    return 1;
+}
+
+int pico8_count(lua_State *L) {
+    int c = 0;
+    if (lua_istable(L, 1)) {
+        bool has_v = (lua_gettop(L) >= 2 && !lua_isnil(L, 2));
+        if (has_v) {
+            int len = lua_rawlen(L, 1);
+            for (int i = 1; i <= len; i++) {
+                lua_rawgeti(L, 1, i);
+                if (lua_rawequal(L, 2, -1)) c++;
+                lua_pop(L, 1);
+            }
+        } else {
+            c = lua_rawlen(L, 1);
+        }
+    } else {
+        return 0;
+    }
+    lua_pushinteger(L, c);
+    return 1;
+}
+
+int pico8_foreach(lua_State *L) {
+    if (!lua_istable(L, 1) || !lua_isfunction(L, 2)) return 0;
+    int len = lua_rawlen(L, 1);
+    for (int i = 1; i <= len; i++) {
+        lua_pushvalue(L, 2);
+        lua_rawgeti(L, 1, i);
+        lua_call(L, 1, 0);
+    }
     return 0;
 }
 
@@ -2214,6 +2415,7 @@ void lua_register_functions(lua_State *L)
     // ****************************************************************
     // *** Graphics ***
     // ****************************************************************
+    lua_register(L, "all", pico8_all);
     lua_register(L, "camera", camera);
     lua_register(L, "circ", circ);
     lua_register(L, "circfill", circfill);
@@ -2246,11 +2448,12 @@ void lua_register_functions(lua_State *L)
     // ****************************************************************
     // *** Tables ***
     // ****************************************************************
-    // lua_register(L, "add", add);
-    // lua_register(L, "all", all);
-    // lua_register(L, "count", count);
-    // lua_register(L, "del", del);
-    // lua_register(L, "foreach", foreach);
+    lua_register(L, "add", pico8_add);
+    lua_register(L, "all", pico8_all);
+    lua_register(L, "count", pico8_count);
+    lua_register(L, "del", pico8_del);
+    lua_register(L, "deli", pico8_deli);
+    lua_register(L, "foreach", pico8_foreach);
     // lua_register(L, "pairs", pairs);
     // ****************************************************************
     // *** Input ***
@@ -2419,7 +2622,9 @@ void lua_load_api()
     lua_setpico8memory(L, m_memory);
 
     // Set debug hook to pump events every ~3000 instructions
-    lua_sethook(L, lua_event_pump_hook, LUA_MASKCOUNT, 3000);
+    // This adds significant overhead to the Lua VM by checking instruction counts,
+    // so we disable it for performance on ESP32.
+    // lua_sethook(L, lua_event_pump_hook, LUA_MASKCOUNT, 3000);
 }
 
 void lua_shutdown_api()
@@ -2497,9 +2702,16 @@ void lua_init_script(const char *file_name, const char *script)
         return;
     }
 
-    char *temp_file_name = malloc(strlen(file_name) + 2);
-    temp_file_name[0] = '@';
-    strcpy(temp_file_name + 1, file_name);
+    char *temp_file_name = NULL;
+    if (file_name) {
+        temp_file_name = malloc(strlen(file_name) + 2);
+        if (temp_file_name) {
+            temp_file_name[0] = '@';
+            strcpy(temp_file_name + 1, file_name);
+        }
+    } else {
+        temp_file_name = strdup("@cart");
+    }
     // --- MEMORY BREATHING: Suspend large buffers before compiling ---
     extern void p8_suspend_memory_for_lua_compile(void);
     extern void p8_resume_memory_after_lua_compile(void);
@@ -2617,8 +2829,11 @@ void lua_call_function(const char *name, int ret)
     lua_getglobal(L, name);
     int error = lua_pcall(L, 0, ret, 0);
 
-    if (error)
-        lua_print_error(name);
+    if (error) {
+        if (!p8_is_load_requested() && !p8_is_restart_requested()) {
+            lua_print_error(name);
+        }
+    }
 }
 
 void lua_update()
@@ -2703,6 +2918,6 @@ void lua_init()
 void p8_lua_gc_step(void)
 {
     if (L) {
-        lua_gc(L, LUA_GCSTEP, 400); // Process a significant chunk of garbage each frame
+        lua_gc(L, LUA_GCSTEP, 2); // Process 2KB of garbage each frame (instead of 400KB which caused 20ms lag)
     }
 }

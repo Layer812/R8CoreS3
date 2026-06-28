@@ -11,7 +11,7 @@
 #define P8_AUDIO_H
 
 #define SAMPLE_RATE 22050
-#define MAX_VOLUME 4096
+#define MAX_VOLUME 1500
 #define CHANNEL_COUNT 4
 #define SOUND_BUFFER_SIZE 1024
 #define SOUND_COUNT 64
@@ -26,6 +26,7 @@ void audio_sound(int32_t index, int32_t channel, uint32_t start, uint32_t end);
 void audio_music(int32_t index, int32_t fade_ms, int32_t mask);
 int32_t audio_stat(int32_t index);
 void audio_pcm_write(uint16_t address, uint16_t length);
+void audio_pcm_write_byte(uint8_t val);
 int16_t audio_pcm_buffered();
 int16_t audio_pcm_app_buffer();
 

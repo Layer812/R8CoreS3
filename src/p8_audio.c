@@ -521,6 +521,68 @@ void render_sound(int waveform, int pitch, int volume, int position, int offset,
     }
 }
 
+
+static void evaluate_note(uint8_t *mem, int sfx_index, int sample_index, float t, uint16_t data, int *eff_pitch, int *eff_volume, int *eff_waveform)
+{
+    uint8_t effect = (data & EFFECT_MASK) >> EFFECT_SHIFT;
+    uint8_t volume = (data & VOLUME_MASK) >> VOLUME_SHIFT;
+    uint8_t pitch = data & PITCH_MASK;
+    uint8_t waveform = (data & WAVEFORM_MASK) >> WAVEFORM_SHIFT;
+    
+    *eff_pitch = pitch;
+    *eff_volume = volume;
+    *eff_waveform = waveform;
+
+    if (effect != EFFECT_NONE)
+    {
+        switch (effect)
+        {
+        case EFFECT_SLIDE:
+        {
+            int prev_pitch = pitch;
+            if (sample_index > 0)
+            {
+                uint8_t plo = mem[MEMORY_SFX + 68 * sfx_index + (sample_index - 1) * 2];
+                uint8_t phi = mem[MEMORY_SFX + 68 * sfx_index + (sample_index - 1) * 2 + 1];
+                prev_pitch = ((uint16_t)((phi << 8) | plo)) & PITCH_MASK;
+            }
+            *eff_pitch = (int)(prev_pitch + (pitch - prev_pitch) * t);
+        }
+        break;
+        case EFFECT_VIBRATO:
+            *eff_pitch = pitch + (int)(sinf(t * 2.0f * PI) * 1.0f);
+            break;
+        case EFFECT_DROP:
+            *eff_pitch = (int)(pitch * (1.0f - t));
+            break;
+        case EFFECT_FADEIN:
+            *eff_volume = (int)(volume * t);
+            break;
+        case EFFECT_FADEOUT:
+            *eff_volume = (int)(volume * (1.0f - t));
+            break;
+        case EFFECT_ARPEGGIOFAST:
+        {
+            int phase = (int)(t * 4.0f) % 3;
+            if (phase == 1) *eff_pitch = pitch + 4;
+            else if (phase == 2) *eff_pitch = pitch + 7;
+        }
+        break;
+        case EFFECT_ARPEGGIOSLOW:
+        {
+            int phase = (int)(t * 2.0f) % 3;
+            if (phase == 1) *eff_pitch = pitch + 4;
+            else if (phase == 2) *eff_pitch = pitch + 7;
+        }
+        break;
+        }
+        if (*eff_pitch < 0) *eff_pitch = 0;
+        if (*eff_pitch > 63) *eff_pitch = 63;
+        if (*eff_volume < 0) *eff_volume = 0;
+        if (*eff_volume > 7) *eff_volume = 7;
+    }
+}
+
 void render_sounds(int16_t *buffer, int total_samples)
 {
     update_sound_queue();
@@ -558,6 +620,21 @@ void render_sounds(int16_t *buffer, int total_samples)
                 int samples_to_next_tick = sample_per_tick - (channel->position % sample_per_tick);
                 if (samples_to_next_tick < chunk_length)
                     chunk_length = samples_to_next_tick;
+
+                uint8_t data_lo = m_memory[MEMORY_SFX + 68 * channel->sound_index + channel->sample * 2];
+                uint8_t data_hi = m_memory[MEMORY_SFX + 68 * channel->sound_index + channel->sample * 2 + 1];
+                uint16_t data = (uint16_t)((data_hi << 8) | data_lo);
+                bool is_custom = (data & 0x8000) != 0;
+                
+                if (is_custom) {
+                    uint8_t inst_sfx = (data & WAVEFORM_MASK) >> WAVEFORM_SHIFT;
+                    uint8_t inst_speed = m_memory[MEMORY_SFX + 68 * inst_sfx + 64 + 1];
+                    int inst_sample_per_tick = (SAMPLE_RATE / 128) * (inst_speed + 1);
+                    int samples_into_note = channel->position % sample_per_tick;
+                    int inst_samples_to_next_tick = inst_sample_per_tick - (samples_into_note % inst_sample_per_tick);
+                    if (inst_samples_to_next_tick < chunk_length)
+                        chunk_length = inst_samples_to_next_tick;
+                }
             }
         }
 
@@ -582,65 +659,60 @@ void render_sounds(int16_t *buffer, int total_samples)
                 uint8_t data_hi = m_memory[MEMORY_SFX + 68 * channel->sound_index + channel->sample * 2 + 1];
                 uint16_t data = (uint16_t)((data_hi << 8) | data_lo);
 
-                uint8_t effect = (data & EFFECT_MASK) >> EFFECT_SHIFT;
-                uint8_t volume = (data & VOLUME_MASK) >> VOLUME_SHIFT;
-                uint8_t waveform = (data & WAVEFORM_MASK) >> WAVEFORM_SHIFT;
-                uint8_t pitch = data & PITCH_MASK;
+                bool is_custom = (data & 0x8000) != 0;
 
-                int eff_pitch = pitch;
-                int eff_volume = volume;
+                float t = (float)(channel->position % sample_per_tick) / (float)sample_per_tick;
+                
+                int eff_pitch, eff_volume, eff_waveform;
+                evaluate_note(m_memory, channel->sound_index, channel->sample, t, data, &eff_pitch, &eff_volume, &eff_waveform);
 
-                if (effect != EFFECT_NONE)
-                {
-                    float t = (float)(channel->position % sample_per_tick) / (float)sample_per_tick;
-                    switch (effect)
-                    {
-                    case EFFECT_SLIDE:
-                    {
-                        int prev_pitch = pitch;
-                        if (channel->sample > 0)
-                        {
-                            uint8_t plo = m_memory[MEMORY_SFX + 68 * channel->sound_index + (channel->sample - 1) * 2];
-                            uint8_t phi = m_memory[MEMORY_SFX + 68 * channel->sound_index + (channel->sample - 1) * 2 + 1];
-                            prev_pitch = ((uint16_t)((phi << 8) | plo)) & PITCH_MASK;
+                int final_pitch = eff_pitch;
+                int final_volume = eff_volume;
+                int final_waveform = eff_waveform;
+
+                if (is_custom && eff_volume > 0) {
+                    uint8_t inst_sfx = eff_waveform;
+                    uint8_t inst_speed = m_memory[MEMORY_SFX + 68 * inst_sfx + 64 + 1];
+                    int inst_sample_per_tick = (SAMPLE_RATE / 128) * (inst_speed + 1);
+                    int samples_into_note = channel->position % sample_per_tick;
+                    int inst_note_index = samples_into_note / inst_sample_per_tick;
+
+                    uint8_t loop_start = m_memory[MEMORY_SFX + 68 * inst_sfx + 64 + 2];
+                    uint8_t loop_end = m_memory[MEMORY_SFX + 68 * inst_sfx + 64 + 3];
+                    if (loop_end > 0 && loop_end >= loop_start) {
+                        if (inst_note_index >= loop_end) {
+                            int loop_len = loop_end - loop_start;
+                            if (loop_len > 0) {
+                                inst_note_index = loop_start + ((inst_note_index - loop_end) % loop_len);
+                            } else {
+                                inst_note_index = loop_start;
+                            }
                         }
-                        eff_pitch = (int)(prev_pitch + (pitch - prev_pitch) * t);
                     }
-                    break;
-                    case EFFECT_VIBRATO:
-                        eff_pitch = pitch + (int)(sinf(t * 2.0f * PI) * 1.0f);
-                        break;
-                    case EFFECT_DROP:
-                        eff_pitch = (int)(pitch * (1.0f - t));
-                        break;
-                    case EFFECT_FADEIN:
-                        eff_volume = (int)(volume * t);
-                        break;
-                    case EFFECT_FADEOUT:
-                        eff_volume = (int)(volume * (1.0f - t));
-                        break;
-                    case EFFECT_ARPEGGIOFAST:
-                    {
-                        int phase = (int)(t * 4.0f) % 3;
-                        if (phase == 1) eff_pitch = pitch + 4;
-                        else if (phase == 2) eff_pitch = pitch + 7;
+
+                    if (inst_note_index < 32) {
+                        uint8_t inst_lo = m_memory[MEMORY_SFX + 68 * inst_sfx + inst_note_index * 2];
+                        uint8_t inst_hi = m_memory[MEMORY_SFX + 68 * inst_sfx + inst_note_index * 2 + 1];
+                        uint16_t inst_data = (uint16_t)((inst_hi << 8) | inst_lo);
+                        
+                        float inst_t = (float)(samples_into_note % inst_sample_per_tick) / (float)inst_sample_per_tick;
+                        int inst_eff_pitch, inst_eff_volume, inst_eff_waveform;
+                        evaluate_note(m_memory, inst_sfx, inst_note_index, inst_t, inst_data, &inst_eff_pitch, &inst_eff_volume, &inst_eff_waveform);
+                        
+                        final_waveform = inst_eff_waveform;
+                        final_pitch = final_pitch + inst_eff_pitch - 24;
+                        if (final_pitch < 0) final_pitch = 0;
+                        if (final_pitch > 63) final_pitch = 63;
+                        final_volume = (final_volume * inst_eff_volume) / 7;
+                    } else {
+                        final_volume = 0;
                     }
-                    break;
-                    case EFFECT_ARPEGGIOSLOW:
-                    {
-                        int phase = (int)(t * 2.0f) % 3;
-                        if (phase == 1) eff_pitch = pitch + 4;
-                        else if (phase == 2) eff_pitch = pitch + 7;
-                    }
-                    break;
-                    }
-                    if (eff_pitch < 0) eff_pitch = 0;
-                    if (eff_pitch > 63) eff_pitch = 63;
-                    if (eff_volume < 0) eff_volume = 0;
-                    if (eff_volume > 7) eff_volume = 7;
                 }
 
-                render_sound(waveform, eff_pitch, eff_volume, channel->position, index, chunk_length, buffer);
+                if (final_volume > 0)
+                {
+                    render_sound(final_waveform, final_pitch, final_volume, channel->position, index, chunk_length, buffer);
+                }
 
                 channel->position += chunk_length;
                 channel->sample = channel->position / sample_per_tick;
@@ -767,6 +839,18 @@ void audio_pcm_write(uint16_t address, uint16_t length)
     for (uint32_t i = 0; i < length; i++)
     {
         m_pcm_buffer[m_pcm_write_pos] = m_memory[address + i];
+        m_pcm_write_pos = (m_pcm_write_pos + 1) % PCM_BUFFER_SIZE;
+        m_pcm_buffered++;
+    }
+#endif
+}
+
+void audio_pcm_write_byte(uint8_t val)
+{
+#ifdef ENABLE_AUDIO
+    if (PCM_BUFFER_SIZE - m_pcm_buffered > 0)
+    {
+        m_pcm_buffer[m_pcm_write_pos] = val;
         m_pcm_write_pos = (m_pcm_write_pos + 1) % PCM_BUFFER_SIZE;
         m_pcm_buffered++;
     }
