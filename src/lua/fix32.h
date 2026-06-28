@@ -29,6 +29,7 @@ static inline fix32_t fix32_from_bits(int32_t b)   { return b; }
 /* Conversion */
 static inline int     fix32_to_int(fix32_t x)      { return x >> 16; }
 static inline double  fix32_to_double(fix32_t x)    { return (double)x / 65536.0; }
+static inline float   fix32_to_float(fix32_t x)     { return (float)x / 65536.0f; }
 static inline int32_t fix32_bits(fix32_t x)         { return x; }
 
 /* Comparisons */
@@ -55,10 +56,19 @@ static inline fix32_t fix32_div(fix32_t a, fix32_t b) {
         return a;
 
     if (b) {
+#ifdef OS_FREERTOS
+        float fa = (float)(int32_t)fix32_bits(a);
+        float fb = (float)(int32_t)fix32_bits(b);
+        float result = (fa * 65536.0f) / fb;
+        if (result > 2147483647.0f) return (fix32_t)0x7FFFFFFFU;
+        if (result < -2147483647.0f) return (fix32_t)0x80000001U;
+        return fix32_from_bits((int32_t)result);
+#else
         int64_t result = (int64_t)a * 0x10000 / b;
         int64_t abs_result = result < 0 ? -result : result;
         if (abs_result <= (int64_t)0x7FFFFFFFU)
             return (fix32_t)result;
+#endif
     }
 
     /* Return 0x8000.0001 (not 0x8000.0000) for -Inf, just like PICO-8 */

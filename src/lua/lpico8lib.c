@@ -99,8 +99,22 @@ static int pico8_atan2(lua_State *l) {
     return 1;
 }
 
+#include <math.h>
+
 static int pico8_sqrt(lua_State *l) {
-    int64_t root = 0, x = (int64_t)fix32_bits(lua_tonumber(l, 1)) << 16;
+    int32_t bits = fix32_bits(lua_tonumber(l, 1));
+    if (bits <= 0) {
+        lua_pushnumber(l, fix32_from_bits(0));
+        return 1;
+    }
+    
+#ifdef OS_FREERTOS
+    // Fast path using hardware FPU
+    float f = (float)bits / 65536.0f;
+    float r = sqrtf(f);
+    lua_pushnumber(l, fix32_from_bits((int32_t)(r * 65536.0f)));
+#else
+    int64_t root = 0, x = (int64_t)bits << 16;
     if (x > 0) {
         /* Square root by abacus algorithm, Martin Guy @ UKC, June 1985. */
         int64_t a;
@@ -112,6 +126,7 @@ static int pico8_sqrt(lua_State *l) {
         }
     }
     lua_pushnumber(l, fix32_from_bits((int32_t)root));
+#endif
     return 1;
 }
 

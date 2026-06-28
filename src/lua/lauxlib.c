@@ -917,6 +917,10 @@ LUALIB_API const char *luaL_gsub (lua_State *L, const char *s, const char *p,
 
 
 size_t g_lua_memory_usage = 0;
+#ifdef OS_FREERTOS
+#include "esp_heap_caps.h"
+#endif
+
 size_t g_lua_active_blocks = 0;
 size_t g_lua_total_allocs = 0;
 size_t g_lua_total_frees = 0;
@@ -931,7 +935,21 @@ static void *l_alloc (void *ud, void *ptr, size_t osize, size_t nsize) {
       }
 #endif
       // Allocate new block
+#ifdef OS_FREERTOS
+      void *new_ptr = NULL;
+      // 内部SRAMが十分に余っている場合(約10KB以上の空き)は、超高速な内部SRAMをLuaに割り当てる
+      if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) > 10000) {
+          new_ptr = heap_caps_malloc(nsize, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+      }
+      // 内部SRAMが減ってきたら、M5GFXのDMA用などに残すためにPSRAMへ逃がす
+      if (!new_ptr) {
+          new_ptr = heap_caps_malloc(nsize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      }
+      // それでもダメなら通常のmalloc
+      if (!new_ptr) new_ptr = malloc(nsize);
+#else
       void *new_ptr = malloc(nsize);
+#endif
       if (new_ptr) {
       g_lua_memory_usage += nsize;
       g_lua_active_blocks++;
@@ -953,7 +971,11 @@ static void *l_alloc (void *ud, void *ptr, size_t osize, size_t nsize) {
     }
     if (g_lua_active_blocks > 0) g_lua_active_blocks--;
     g_lua_total_frees++;
+#ifdef OS_FREERTOS
+    heap_caps_free(ptr);
+#else
     free(ptr);
+#endif
     return NULL;
   } else {
     // Reallocate existing block
@@ -965,7 +987,20 @@ static void *l_alloc (void *ud, void *ptr, size_t osize, size_t nsize) {
       }
     }
 #endif
+#ifdef OS_FREERTOS
+    void *new_ptr = NULL;
+    // 再確保時も同様に、内部SRAMが潤沢なら内部SRAMへ
+    if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL) > 10000) {
+        new_ptr = heap_caps_realloc(ptr, nsize, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+    // 空きが少なければPSRAMへ
+    if (!new_ptr) {
+        new_ptr = heap_caps_realloc(ptr, nsize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    }
+    if (!new_ptr) new_ptr = realloc(ptr, nsize);
+#else
     void *new_ptr = realloc(ptr, nsize);
+#endif
     if (new_ptr) {
       g_lua_memory_usage += nsize;
       if (g_lua_memory_usage >= osize) {

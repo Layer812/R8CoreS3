@@ -163,11 +163,17 @@ char *apply_p8t_patch(const char *old_script, const char *p8t_path) {
                     break;
                 }
 
+                int len = strlen(line);
+                if (len > 0 && line[len - 1] == '\r') {
+                    line[len - 1] = '\0';
+                    len--;
+                }
+
                 if (state == 0) {
-                    sb_append(&search_sb, line, strlen(line));
+                    sb_append(&search_sb, line, len);
                     sb_append(&search_sb, "\n", 1);
                 } else {
-                    sb_append(&replace_sb, line, strlen(line));
+                    sb_append(&replace_sb, line, len);
                     sb_append(&replace_sb, "\n", 1);
                 }
             }

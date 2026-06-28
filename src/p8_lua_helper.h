@@ -33,6 +33,7 @@ static inline void draw_line(int x0, int y0, int x1, int y1, int col, int fillp)
 static inline void draw_char(int n, int left, int top, int col);
 static inline void draw_rect(int x0, int y0, int x1, int y1, int col, int fillp);
 static inline void draw_rectfill(int x0, int y0, int x1, int y1, int col, int fillp);
+static inline int gfx_addr_remap(int location);
 static inline uint8_t gfx_addr_get(int x, int y, uint8_t *memory, int location, int size);
 static inline uint8_t gfx_get(int x, int y, int location, int size);
 static inline void gfx_set(int x, int y, int location, int size, int col);
@@ -46,6 +47,7 @@ static inline void clip_get(int *x0, int *y0, int *x1, int *y1);
 static inline void clip_set(int x, int y, int w, int h);
 static inline void cursor_get(int *x, int *y);
 static inline void cursor_set(int x, int y, int col);
+static inline void pixel_set_screen(int screen_x, int screen_y, int c, int fillp, int draw_type);
 static inline void pixel_set(int x, int y, int c, int fillp, int draw_type);
 static inline void draw_simple_text(const char *str, int x, int y, int col);
 static inline bool is_button_set(int index, int button, bool prev_buttons);
@@ -62,9 +64,16 @@ static inline void clear_screen(int color)
 {
     color = color_get(PALTYPE_DRAW, color);
 
-    for (int y = 0; y < P8_HEIGHT; y++)
-        for (int x = 0; x < P8_WIDTH; x++)
-            gfx_set(x, y, MEMORY_SCREEN, MEMORY_SCREEN_SIZE, color);
+    uint8_t rw_mask = m_memory[MEMORY_RW_MASK];
+    if (rw_mask == 0xFF) {
+        int screen_addr = gfx_addr_remap(MEMORY_SCREEN);
+        uint8_t c = (color << 4) | (color & 0x0F);
+        memset(&m_memory[screen_addr], c, MEMORY_SCREEN_SIZE);
+    } else {
+        for (int y = 0; y < P8_HEIGHT; y++)
+            for (int x = 0; x < P8_WIDTH; x++)
+                gfx_set(x, y, MEMORY_SCREEN, MEMORY_SCREEN_SIZE, color);
+    }
 
     clip_set(0, 0, P8_WIDTH, P8_HEIGHT);
     cursor_set(0, 0, -1);
@@ -157,15 +166,26 @@ static inline void draw_circ(int xc, int yc, int r, int col, int fillp)
 static inline void draw_line(int x0, int y0, int x1, int y1, int col, int fillp)
 {
     if (is_bbox_offscreen(MIN(x0, x1), MIN(y0, y1), MAX(x0, x1), MAX(y0, y1))) return;
+    
+    int cx, cy;
+    camera_get(&cx, &cy);
+    int cx0, cy0, cx1, cy1;
+    clip_get(&cx0, &cy0, &cx1, &cy1);
+
     int dx = abs(x1 - x0);
     int sx = x0 < x1 ? 1 : -1;
     int dy = -abs(y1 - y0);
     int sy = y0 < y1 ? 1 : -1;
     int err = dx + dy;
 
+    int screen_x = x0 - cx;
+    int screen_y = y0 - cy;
+
     while (true)
     {
-        pixel_set(x0, y0, col, fillp, DRAWTYPE_GRAPHIC);
+        if (screen_x >= cx0 && screen_x < cx1 && screen_y >= cy0 && screen_y < cy1) {
+            pixel_set_screen(screen_x, screen_y, col, fillp, DRAWTYPE_GRAPHIC);
+        }
 
         if (x0 == x1 && y0 == y1)
             break;
@@ -175,28 +195,107 @@ static inline void draw_line(int x0, int y0, int x1, int y1, int col, int fillp)
         if (e2 >= dy)
         {
             err += dy;
-
             x0 += sx;
+            screen_x += sx;
         }
 
         if (e2 <= dx)
         {
             err += dx;
             y0 += sy;
+            screen_y += sy;
         }
     }
 }
 
 static inline void draw_hline(int x0, int y, int x1, int col, int fillp)
 {
-    for (int x=x0;x<=x1;x++)
-        pixel_set(x, y, col, fillp, DRAWTYPE_GRAPHIC);
+    if (x0 > x1) { int tmp = x0; x0 = x1; x1 = tmp; }
+    
+    int cx, cy;
+    camera_get(&cx, &cy);
+    int cx0, cy0, cx1, cy1;
+    clip_get(&cx0, &cy0, &cx1, &cy1);
+
+    int start_x = x0 - cx;
+    int end_x = x1 - cx;
+    int screen_y = y - cy;
+
+    if (screen_y < cy0 || screen_y >= cy1) return;
+    if (start_x < cx0) start_x = cx0;
+    if (end_x >= cx1) end_x = cx1 - 1;
+
+    if (start_x > end_x) return;
+
+    if (col >= 0 && col < 16 && m_memory[MEMORY_RW_MASK] == 0xff && m_memory[MEMORY_FILLP] == 0 && m_memory[MEMORY_FILLP_ATTR] == 0) {
+        uint8_t draw_col = m_memory[MEMORY_PALETTES + PALTYPE_DRAW * 16 + col];
+        int offset = (m_memory[MEMORY_SCREEN_PHYS] << 8) + (screen_y << 6) + (start_x >> 1);
+        int len = end_x - start_x + 1;
+        
+        if (start_x & 1) {
+            m_memory[offset] = (m_memory[offset] & 0x0F) | (draw_col << 4);
+            offset++;
+            len--;
+        }
+        
+        if (len >= 2) {
+            uint8_t byte_col = draw_col | (draw_col << 4);
+            memset(&m_memory[offset], byte_col, len >> 1);
+            offset += len >> 1;
+        }
+        
+        if (len & 1) {
+            m_memory[offset] = (m_memory[offset] & 0xF0) | draw_col;
+        }
+        return;
+    }
+
+    for (int x = start_x; x <= end_x; x++) {
+        pixel_set_screen(x, screen_y, col, fillp, DRAWTYPE_GRAPHIC);
+    }
 }
 
 static inline void draw_vline(int x, int y0, int y1, int col, int fillp)
 {
-    for (int y=y0;y<=y1;y++)
-        pixel_set(x, y, col, fillp, DRAWTYPE_GRAPHIC);
+    if (y0 > y1) { int tmp = y0; y0 = y1; y1 = tmp; }
+    
+    int cx, cy;
+    camera_get(&cx, &cy);
+    int cx0, cy0, cx1, cy1;
+    clip_get(&cx0, &cy0, &cx1, &cy1);
+
+    int screen_x = x - cx;
+    int start_y = y0 - cy;
+    int end_y = y1 - cy;
+
+    if (screen_x < cx0 || screen_x >= cx1) return;
+    if (start_y < cy0) start_y = cy0;
+    if (end_y >= cy1) end_y = cy1 - 1;
+
+    if (start_y > end_y) return;
+
+    if (col >= 0 && col < 16 && m_memory[MEMORY_RW_MASK] == 0xff && m_memory[MEMORY_FILLP] == 0 && m_memory[MEMORY_FILLP_ATTR] == 0) {
+        uint8_t draw_col = m_memory[MEMORY_PALETTES + PALTYPE_DRAW * 16 + col];
+        int offset = (m_memory[MEMORY_SCREEN_PHYS] << 8) + (start_y << 6) + (screen_x >> 1);
+        
+        if (screen_x & 1) {
+            uint8_t v = draw_col << 4;
+            for (int y = start_y; y <= end_y; y++) {
+                m_memory[offset] = (m_memory[offset] & 0x0F) | v;
+                offset += 64;
+            }
+        } else {
+            for (int y = start_y; y <= end_y; y++) {
+                m_memory[offset] = (m_memory[offset] & 0xF0) | draw_col;
+                offset += 64;
+            }
+        }
+        return;
+    }
+
+    for (int y = start_y; y <= end_y; y++) {
+        pixel_set_screen(screen_x, y, col, fillp, DRAWTYPE_GRAPHIC);
+    }
 }
 
 static inline void draw_ovalfill_segment(int xc, int yc, int x, int y, int r, int xr, int yr, int col, int fillp, int mask)
@@ -304,25 +403,42 @@ static inline bool point_in_rect(int x, int y, int x0, int y0, int x1, int y1)
 
 static inline void draw_rectfill(int x0, int y0, int x1, int y1, int col, int fillp)
 {
-    bool invert = fillp_invert_enabled(col);
-    if (invert) {
-        int cx, cy;
-        camera_get(&cx, &cy);
-        int clip_x0, clip_y0, clip_x1, clip_y1;
-        clip_get(&clip_x0, &clip_y0, &clip_x1, &clip_y1);
+    if (x0 > x1) { int tmp = x0; x0 = x1; x1 = tmp; }
+    if (y0 > y1) { int tmp = y0; y0 = y1; y1 = tmp; }
 
-        for (int y = clip_y0; y < clip_y1; y++) {
-            for (int x = clip_x0; x < clip_x1; x++) {
-                if (!point_in_rect(x, y, x0, y0, x1, y1))
-                    pixel_set(x + cx, y + cy, col, fillp, DRAWTYPE_GRAPHIC);
+    bool invert = fillp_invert_enabled(col);
+    int cx, cy;
+    camera_get(&cx, &cy);
+    int cx0, cy0, cx1, cy1;
+    clip_get(&cx0, &cy0, &cx1, &cy1);
+
+    if (invert) {
+        for (int y = cy0; y < cy1; y++) {
+            for (int x = cx0; x < cx1; x++) {
+                if (!point_in_rect(x + cx, y + cy, x0, y0, x1, y1))
+                    pixel_set_screen(x, y, col, fillp, DRAWTYPE_GRAPHIC);
             }
         }
         return;
     }
 
-    for (int x=x0;x<=x1;x++)
-        for(int y=y0;y<=y1;y++)
-            pixel_set(x, y, col, fillp, DRAWTYPE_GRAPHIC);
+    int start_x = x0 - cx;
+    int end_x = x1 - cx;
+    int start_y = y0 - cy;
+    int end_y = y1 - cy;
+
+    if (start_x < cx0) start_x = cx0;
+    if (end_x >= cx1) end_x = cx1 - 1;
+    if (start_y < cy0) start_y = cy0;
+    if (end_y >= cy1) end_y = cy1 - 1;
+
+    if (start_x > end_x || start_y > end_y) return;
+
+    for (int y = start_y; y <= end_y; y++) {
+        for(int x = start_x; x <= end_x; x++) {
+            pixel_set_screen(x, y, col, fillp, DRAWTYPE_GRAPHIC);
+        }
+    }
 }
 
 static inline bool point_in_round_rect(int x, int y, int left, int top, int right, int bottom, int r)
@@ -361,6 +477,58 @@ static inline void draw_ovalfill(int x0, int y0, int x1, int y1, int col, int fi
     draw_ovalfill_mask(x, y, xr, yr, col, fillp, 0xff);
 }
 
+static inline void pixel_set_screen(int screen_x, int screen_y, int c, int fillp, int draw_type)
+{
+    if (c >= 0 && c < 16 && m_memory[MEMORY_RW_MASK] == 0xff && m_memory[MEMORY_FILLP] == 0 && m_memory[MEMORY_FILLP_ATTR] == 0) {
+        int offset = (m_memory[MEMORY_SCREEN_PHYS] << 8) + (screen_x >> 1) + (screen_y << 6);
+        uint8_t col = m_memory[MEMORY_PALETTES + PALTYPE_DRAW * 16 + c];
+        if (screen_x & 1) {
+            m_memory[offset] = (m_memory[offset] & 0x0F) | (col << 4);
+        } else {
+            m_memory[offset] = (m_memory[offset] & 0xF0) | col;
+        }
+        return;
+    }
+
+    bool fillp_sprites, fillp_graphics_secondary, transparency;
+    if (c & 0x1000) {
+        transparency = (c & 0x100) != 0;
+        fillp_sprites = (c & 0x200) != 0;
+        fillp_graphics_secondary = (c & 0x400) != 0;
+    } else {
+        fillp = m_memory[MEMORY_FILLP] | (m_memory[MEMORY_FILLP + 1] << 8);
+        transparency = (m_memory[MEMORY_FILLP_ATTR] & 1) != 0;
+        fillp_sprites = (m_memory[MEMORY_FILLP_ATTR] & 2) != 0;
+        fillp_graphics_secondary = (m_memory[MEMORY_FILLP_ATTR] & 4) != 0;
+    }
+    unsigned bit = ((3-screen_y) & 0x3) * 4 + ((3-screen_x) & 0x3);
+    bool on = (fillp & (1 << bit)) != 0;
+    bool use_fillp = (draw_type == DRAWTYPE_GRAPHIC) || (draw_type == DRAWTYPE_SPRITE && fillp_sprites);
+    bool use_secondary_palette = (draw_type == DRAWTYPE_SPRITE  && fillp_sprites) || (draw_type == DRAWTYPE_GRAPHIC && fillp_graphics_secondary);
+    if (!use_fillp || (use_fillp && !transparency) || !on) {
+        uint8_t col;
+        if (c == -1)
+            c = pencolor_get();
+        if (use_secondary_palette) {
+            uint8_t col_draw = color_get(PALTYPE_DRAW, (uint8_t)c);
+            uint8_t col_secondary = color_get(PALTYPE_SECONDARY, col_draw);
+            if (on)
+                col = (col_secondary >> 4) & 0xf;
+            else
+                col = col_secondary & 0xf;
+        } else {
+            if (use_fillp) {
+                if (on)
+                    c = (c >> 4) & 0xf;
+                else
+                    c = c & 0xf;
+            }
+            col = color_get(PALTYPE_DRAW, c);
+        }
+        gfx_set(screen_x, screen_y, MEMORY_SCREEN, MEMORY_SCREEN_SIZE, col);
+    }
+}
+
 static inline void pixel_set(int x, int y, int c, int fillp, int draw_type)
 {
     int cx, cy;
@@ -372,43 +540,7 @@ static inline void pixel_set(int x, int y, int c, int fillp, int draw_type)
 
     if (x >= x0 && x < x1 && y >= y0 && y < y1)
     {
-        bool fillp_sprites, fillp_graphics_secondary, transparency;
-        if (c & 0x1000) {
-            transparency = (c & 0x100) != 0;
-            fillp_sprites = (c & 0x200) != 0;
-            fillp_graphics_secondary = (c & 0x400) != 0;
-        } else {
-            fillp = m_memory[MEMORY_FILLP] | (m_memory[MEMORY_FILLP + 1] << 8);
-            transparency = (m_memory[MEMORY_FILLP_ATTR] & 1) != 0;
-            fillp_sprites = (m_memory[MEMORY_FILLP_ATTR] & 2) != 0;
-            fillp_graphics_secondary = (m_memory[MEMORY_FILLP_ATTR] & 4) != 0;
-        }
-        unsigned bit = ((3-y) & 0x3) * 4 + ((3-x) & 0x3);
-        bool on = (fillp & (1 << bit)) != 0;
-        bool use_fillp = (draw_type == DRAWTYPE_GRAPHIC) || (draw_type == DRAWTYPE_SPRITE && fillp_sprites);
-        bool use_secondary_palette = (draw_type == DRAWTYPE_SPRITE  && fillp_sprites) || (draw_type == DRAWTYPE_GRAPHIC && fillp_graphics_secondary);
-        if (!use_fillp || (use_fillp && !transparency) || !on) {
-            uint8_t col;
-            if (c == -1)
-                c = pencolor_get();
-            if (use_secondary_palette) {
-                uint8_t col_draw = color_get(PALTYPE_DRAW, (uint8_t)c);
-                uint8_t col_secondary = color_get(PALTYPE_SECONDARY, col_draw);
-                if (on)
-                    col = (col_secondary >> 4) & 0xf;
-                else
-                    col = col_secondary & 0xf;
-            } else {
-                if (use_fillp) {
-                    if (on)
-                        c = (c >> 4) & 0xf;
-                    else
-                        c = c & 0xf;
-                }
-                col = color_get(PALTYPE_DRAW, c);
-            }
-            gfx_set(x, y, MEMORY_SCREEN, MEMORY_SCREEN_SIZE, col);
-        }
+        pixel_set_screen(x, y, c, fillp, draw_type);
     }
 }
 
@@ -438,15 +570,22 @@ static inline void draw_scaled_sprite(int sx, int sy, int sw, int sh, int dx, in
 
     if (start_y >= end_y || start_x >= end_x) return;
 
-    uint32_t step_x = (sw << 16) / dw;
-    uint32_t step_y = (sh << 16) / dh;
-
-    uint32_t start_v = start_y * step_y;
-    uint32_t start_u = start_x * step_x;
-
     bool fillp_sprites = (m_memory[MEMORY_FILLP_ATTR] & 2) != 0;
 
-    uint32_t v = start_v;
+    int step_x = (int)((sw << 16) / dw);
+    int step_y = (int)((sh << 16) / dh);
+
+    int start_u = start_x * step_x;
+    uint32_t v = start_y * step_y;
+
+    int screen_addr = gfx_addr_remap(MEMORY_SCREEN);
+    int sprites_addr = gfx_addr_remap(MEMORY_SPRITES);
+
+    uint8_t pal[16];
+    for (int i = 0; i < 16; i++) {
+        pal[i] = m_memory[MEMORY_PALETTES + PALTYPE_DRAW * 16 + i];
+    }
+
     for (int y = start_y; y < end_y; y++)
     {
         int screen_y = screen_dy + y;
@@ -455,6 +594,10 @@ static inline void draw_scaled_sprite(int sx, int sy, int sw, int sh, int dx, in
         v += step_y;
 
         uint32_t u = start_u;
+        
+        int dest_row_offset = screen_addr + screen_y * 64;
+        int src_row_offset = sprites_addr + src_y * 64;
+
         for (int x = start_x; x < end_x; x++)
         {
             int screen_x = screen_dx + x;
@@ -462,12 +605,19 @@ static inline void draw_scaled_sprite(int sx, int sy, int sw, int sh, int dx, in
             int src_x = sx + mapped_x;
             u += step_x;
 
-            uint8_t index = gfx_get(src_x, src_y, MEMORY_SPRITES, MEMORY_SPRITES_SIZE);
-            uint8_t color = color_get(PALTYPE_DRAW, (int)index);
+            int src_idx = src_row_offset + (src_x >> 1);
+            uint8_t index = (src_x & 1) ? (m_memory[src_idx] >> 4) : (m_memory[src_idx] & 0x0F);
+            
+            uint8_t color = pal[index];
 
             if ((color & 0xf0) == 0) {
                 if (!fillp_sprites) {
-                    gfx_set(screen_x, screen_y, MEMORY_SCREEN, MEMORY_SCREEN_SIZE, color & 0x0f);
+                    int dest_idx = dest_row_offset + (screen_x >> 1);
+                    if (screen_x & 1) {
+                        m_memory[dest_idx] = (m_memory[dest_idx] & 0x0F) | (color << 4);
+                    } else {
+                        m_memory[dest_idx] = (m_memory[dest_idx] & 0xF0) | color;
+                    }
                 } else {
                     pixel_set(dx + x, dy + y, index, 0, DRAWTYPE_SPRITE);
                 }
@@ -481,17 +631,58 @@ static inline void draw_sprite(int n, int left, int top, bool flip_x, bool flip_
     int sx = (n & 0xF) * SPRITE_WIDTH;
     int sy = (n >> 4) * SPRITE_HEIGHT;
 
-    for (int y = 0; y < SPRITE_HEIGHT; y++)
+    int cx, cy;
+    camera_get(&cx, &cy);
+    int x0, y0, x1, y1;
+    clip_get(&x0, &y0, &x1, &y1);
+
+    int screen_dx = left - cx;
+    int screen_dy = top - cy;
+
+    if (screen_dx >= x1 || screen_dy >= y1 || screen_dx + SPRITE_WIDTH <= x0 || screen_dy + SPRITE_HEIGHT <= y0)
+        return;
+
+    int start_y = (screen_dy < y0) ? (y0 - screen_dy) : 0;
+    int end_y = (screen_dy + SPRITE_HEIGHT > y1) ? (y1 - screen_dy) : SPRITE_HEIGHT;
+    int start_x = (screen_dx < x0) ? (x0 - screen_dx) : 0;
+    int end_x = (screen_dx + SPRITE_WIDTH > x1) ? (x1 - screen_dx) : SPRITE_WIDTH;
+
+    if (start_y >= end_y || start_x >= end_x) return;
+
+    bool fillp_sprites = (m_memory[MEMORY_FILLP_ATTR] & 2) != 0;
+
+    for (int y = start_y; y < end_y; y++)
     {
-        for (int x = 0; x < SPRITE_WIDTH; x++)
+        int screen_y = screen_dy + y;
+        int mapped_y = flip_y ? (SPRITE_HEIGHT - 1 - y) : y;
+        int src_y = sy + mapped_y;
+
+        int dest_row_offset = MEMORY_SCREEN + screen_y * 64;
+        int src_row_offset = MEMORY_SPRITES + src_y * 64;
+
+        for (int x = start_x; x < end_x; x++)
         {
-            int fx = flip_x ? (SPRITE_WIDTH - x - 1) : x;
-            int fy = flip_y ? (SPRITE_HEIGHT - y - 1) : y;
-            uint8_t index = gfx_get(sx + x, sy + y, MEMORY_SPRITES, MEMORY_SPRITES_SIZE);
+            int mapped_x = flip_x ? (SPRITE_WIDTH - 1 - x) : x;
+            int src_x = sx + mapped_x;
+
+            int src_idx = src_row_offset + (src_x >> 1);
+            uint8_t index = (src_x & 1) ? (m_memory[src_idx] >> 4) : (m_memory[src_idx] & 0x0F);
+            
             uint8_t color = color_get(PALTYPE_DRAW, index);
 
-            if ((color & 0xf0) == 0)
-                pixel_set(left + fx, top + fy, index, 0, DRAWTYPE_SPRITE);
+            if ((color & 0xf0) == 0) {
+                if (!fillp_sprites) {
+                    int screen_x = screen_dx + x;
+                    int dest_idx = dest_row_offset + (screen_x >> 1);
+                    if (screen_x & 1) {
+                        m_memory[dest_idx] = (m_memory[dest_idx] & 0x0F) | (color << 4);
+                    } else {
+                        m_memory[dest_idx] = (m_memory[dest_idx] & 0xF0) | color;
+                    }
+                } else {
+                    pixel_set(left + x, top + y, index, 0, DRAWTYPE_SPRITE);
+                }
+            }
         }
     }
 }
@@ -512,16 +703,38 @@ static inline void draw_sprites(int n, int x, int y, int w, int h, bool flip_x, 
 
 static inline void draw_char(int n, int left, int top, int col)
 {
-    int sx = n % 16 * 8;
-    int sy = n / 16 * 8;
+    int sx = (n % 16) * 8;
+    int sy = (n / 16) * 8;
 
-    for (int y = 0; y < 8; y++)
+    int cx, cy;
+    camera_get(&cx, &cy);
+    int x0, y0, x1, y1;
+    clip_get(&x0, &y0, &x1, &y1);
+
+    int screen_dx = left - cx;
+    int screen_dy = top - cy;
+
+    if (screen_dx >= x1 || screen_dy >= y1 || screen_dx + 8 <= x0 || screen_dy + 8 <= y0)
+        return;
+
+    int start_y = (screen_dy < y0) ? (y0 - screen_dy) : 0;
+    int end_y = (screen_dy + 8 > y1) ? (y1 - screen_dy) : 8;
+    int start_x = (screen_dx < x0) ? (x0 - screen_dx) : 0;
+    int end_x = (screen_dx + 8 > x1) ? (x1 - screen_dx) : 8;
+
+    for (int y = start_y; y < end_y; y++)
     {
-        for (int x = 0; x < 8; x++)
+        int src_y = sy + y;
+        int src_row_offset = src_y * 64;
+
+        for (int x = start_x; x < end_x; x++)
         {
-            uint8_t index = gfx_addr_get(sx + x, sy + y, (uint8_t *)font_map, 0, sizeof(font_map));
+            int src_x = sx + x;
+            int src_idx = src_row_offset + (src_x >> 1);
+            uint8_t index = (src_x & 1) ? (font_map[src_idx] >> 4) : (font_map[src_idx] & 0x0F);
+
             if (index == 7)
-                pixel_set(left + x, top + y, col, 0, DRAWTYPE_DEFAULT);
+                pixel_set_screen(screen_dx + x, screen_dy + y, col, 0, DRAWTYPE_DEFAULT);
         }
     }
 }

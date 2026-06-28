@@ -27,8 +27,13 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
-#define rh_malloc malloc
-#define rh_free free
+#include <stdlib.h>
+// PSRAM-aware allocators (implemented in p8_emu.c)
+void* rh_malloc(size_t size);
+void* rh_malloc_psram(size_t size);
+void* rh_realloc(void *ptr, size_t size);
+void* rh_realloc_psram(void *ptr, size_t size);
+void  rh_free(void* ptr);
 #define ENABLE_AUDIO
 #endif
 #else
@@ -315,7 +320,7 @@ extern bool m_load_available;
 
 extern const char *m_param_string;
 
-void __attribute__ ((noreturn)) p8_abort();
+void p8_abort();
 void p8_close_cartdata(void);
 void p8_delayed_flush_cartdata(void);
 unsigned p8_elapsed_time(void);
@@ -324,7 +329,7 @@ void p8_flush_cartdata(void);
 int p8_init(void);
 int p8_init_file_with_param(const char *file_name, const char *param);
 void p8_step();
-void __attribute__ ((noreturn)) p8_load_new(const char *filename, const char *param);
+void p8_load_new(const char *filename, const char *param);
 void p8_set_skip_main_loop_if_no_callbacks(bool skip);
 int p8_init_ram(uint8_t *buffer, int size);
 bool p8_open_cartdata(const char *id);
@@ -333,8 +338,15 @@ int p8_shutdown(void);
 void p8_render();
 void p8_reset(void);
 char *p8_resolve_relative_path(const char *filename, bool for_cstore);
-void __attribute__ ((noreturn)) p8_abort();
-void __attribute__ ((noreturn)) p8_restart();
+void p8_abort();
+void p8_restart();
+
+bool p8_is_load_requested(void);
+const char* p8_get_load_filename(void);
+const char* p8_get_load_param(void);
+void p8_clear_load_request(void);
+bool p8_is_restart_requested(void);
+void p8_clear_restart_request(void);
 void p8_seed_rng_state(uint32_t seed);
 void p8_show_io_icon(bool show);
 void p8_show_error_dialog(const char **lines, int line_count, p8_error_severity_t severity);

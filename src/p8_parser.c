@@ -189,7 +189,7 @@ static int parse_p8_ram(const char *file_name, uint8_t *buffer, int size, uint8_
 static int parse_png_ram(const char *file_name, uint8_t *buffer, int size, uint8_t *memory, const char **lua_script, uint8_t **decompression_buffer, uint8_t *label_image);
 static int parse_png_stream(const char *file_name, FILE *file, uint8_t *memory, const char **lua_script, uint8_t **decompression_buffer, uint8_t *label_image);
 static char *process_includes(const char *lua_script, const char *cart_dir);
-// void convert_utf8_to_p8scii(uint8_t *buffer, size_t len);
+void convert_utf8_to_p8scii(uint8_t *buffer, size_t len);
 
 static uint8_t PNG_SIGNATURE[8] = {137, 80, 78, 71, 13, 10, 26, 10};
 
@@ -336,10 +336,10 @@ int parse_cart_file(const char *file_name, uint8_t *memory, const char **lua_scr
         if (decompression_buffer) {
             *file_buffer = decompression_buffer;
         } else {
-#ifndef OS_FREERTOS
-            *file_buffer = (uint8_t *)malloc(1);
+#ifdef OS_FREERTOS
+        *file_buffer = (uint8_t *)rh_malloc_psram(1);
 #else
-            *file_buffer = (uint8_t *)rh_malloc(1);
+            *file_buffer = (uint8_t *)malloc(1);
 #endif
             if (*file_buffer) (*file_buffer)[0] = '\0';
         }
@@ -348,10 +348,10 @@ int parse_cart_file(const char *file_name, uint8_t *memory, const char **lua_scr
         long file_size = ftell(file);
         rewind(file);
 
-#ifndef OS_FREERTOS
-        *file_buffer = (uint8_t *)malloc(file_size + 1);
+#ifdef OS_FREERTOS
+        *file_buffer = (uint8_t *)rh_malloc_psram(file_size + 1);
 #else
-        *file_buffer = (uint8_t *)rh_malloc(file_size + 1);
+        *file_buffer = (uint8_t *)malloc(file_size + 1);
 #endif
 
         fread(*file_buffer, 1, file_size, file);
@@ -372,7 +372,7 @@ int parse_cart_file(const char *file_name, uint8_t *memory, const char **lua_scr
 #ifdef OS_FREERTOS
         // Since lua script is mapped to flash, free file_buffer right now to save RAM before lua compilation
         rh_free(*file_buffer);
-        *file_buffer = (uint8_t *)rh_malloc(1);
+        *file_buffer = (uint8_t *)rh_malloc_psram(1);
         if (*file_buffer) (*file_buffer)[0] = '\0';
 #endif
     }
@@ -731,7 +731,11 @@ static void on_draw_pixel(pngle_t *pngle, unsigned int x, unsigned int y, unsign
         } else {
             if (state->lua_compressed_idx >= state->lua_compressed_cap) {
                 uint32_t new_cap = state->lua_compressed_cap == 0 ? 8192 : state->lua_compressed_cap * 2;
+#ifdef OS_FREERTOS
+                uint8_t* new_buf = (uint8_t*)rh_realloc_psram(state->lua_compressed_buf, new_cap);
+#else
                 uint8_t* new_buf = (uint8_t*)realloc(state->lua_compressed_buf, new_cap);
+#endif
                 if (new_buf) {
                     state->lua_compressed_buf = new_buf;
                     state->lua_compressed_cap = new_cap;
@@ -747,10 +751,10 @@ static void on_draw_pixel(pngle_t *pngle, unsigned int x, unsigned int y, unsign
 
 static int decode_pngle_state(StegoState *state, const char **lua_script, uint8_t **decompression_buffer) {
     if (decompression_buffer && state->lua_compressed_idx > 0) {
-#ifndef OS_FREERTOS
-        *decompression_buffer = (uint8_t*)malloc(0x10001);
+#ifdef OS_FREERTOS
+        *decompression_buffer = (uint8_t*)rh_malloc_psram(0x10001);
 #else
-        *decompression_buffer = (uint8_t*)rh_malloc(0x10001);
+        *decompression_buffer = (uint8_t*)malloc(0x10001);
 #endif
         if (!*decompression_buffer) {
             fprintf(stderr, "Failed to allocate 64KB decompression buffer!\n");
@@ -770,14 +774,14 @@ static int decode_pngle_state(StegoState *state, const char **lua_script, uint8_
         const char *mmap_ptr = p8_map_lua_script(*decompression_buffer, actual_len);
         if (mmap_ptr) {
             rh_free(*decompression_buffer);
-            *decompression_buffer = (uint8_t*)rh_malloc(1);
+            *decompression_buffer = (uint8_t*)rh_malloc_psram(1);
             if (*decompression_buffer) (*decompression_buffer)[0] = '\0';
             if (lua_script)
                 *lua_script = mmap_ptr;
         } else {
             // MMap failed, shrink the decompression buffer using standard realloc
             // (rh_realloc does not exist) to save heap space and use it directly.
-            uint8_t *shrunk = (uint8_t*)realloc(*decompression_buffer, actual_len + 1);
+            uint8_t *shrunk = (uint8_t*)rh_realloc_psram(*decompression_buffer, actual_len + 1);
             if (shrunk) {
                 *decompression_buffer = shrunk;
             }
