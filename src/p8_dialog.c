@@ -603,8 +603,8 @@ p8_dialog_action_t p8_dialog_update(p8_dialog_t *dialog)
         return result;
     }
 
-    // Escape / (Button 2 (X) in quick mode) cancels dialog
-    if ((buttons & BUTTON_MASK_ESCAPE) || (quick_mode && (buttons & BUTTON_MASK_ACTION2))) {
+    // Escape / Pause / (Button 2 (X) in quick mode) cancels dialog
+    if ((buttons & BUTTON_MASK_ESCAPE) || (buttons & BUTTON_MASK_PAUSE) || (quick_mode && (buttons & BUTTON_MASK_ACTION2))) {
         result.type = DIALOG_RESULT_CANCELLED;
         return result;
     }

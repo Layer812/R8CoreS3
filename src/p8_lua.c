@@ -735,6 +735,15 @@ int spr(lua_State *L)
         if (lua_gettop(L) >= 7)
             flip_y = lua_toboolean(L, 7);
 
+        if (w_raw < 0) {
+            w_raw = -w_raw;
+            flip_x = !flip_x;
+        }
+        if (h_raw < 0) {
+            h_raw = -h_raw;
+            flip_y = !flip_y;
+        }
+
         // fix32 stores integers with no fractional bits (lower 16 bits == 0)
         if ((w_raw & 0xFFFF) == 0 && (h_raw & 0xFFFF) == 0)
         {
@@ -789,6 +798,16 @@ int sspr(lua_State *L)
     int dh = lua_to_or_default(L, integer, 8, sh);
     bool flip_x = lua_to_or_default(L, boolean, 9, false);
     bool flip_y = lua_to_or_default(L, boolean, 10, false);
+    
+    if (dw < 0) {
+        dw = -dw;
+        flip_x = !flip_x;
+    }
+    if (dh < 0) {
+        dh = -dh;
+        flip_y = !flip_y;
+    }
+
     float scale_x = (float)dw / sw;
     float scale_y = (float)dh / sh;
 
@@ -1011,7 +1030,7 @@ int music(lua_State *L)
 #ifdef ENABLE_AUDIO
     int prev = audio_stat(54);
 
-    int n = lua_gettop(L) >= 1 ? lua_tointeger(L, 1) : -1;
+    int n = lua_gettop(L) >= 1 ? lua_tointeger(L, 1) : 0;
     int fadems = lua_to_or_default(L, integer, 2, 1);
     int channelmask = lua_to_or_default(L, integer, 3, 0);
 

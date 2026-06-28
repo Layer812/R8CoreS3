@@ -88,6 +88,7 @@ int decompress_mini(uint8 *in_p, uint8 *out_p, int max_len)
 
 		if (val < LITERALS)
 		{
+			if (out >= out_p + max_len - 1) break; // Bounds check
 			// literal
 			if (val == 0)
 			{
@@ -111,8 +112,16 @@ int decompress_mini(uint8 *in_p, uint8 *out_p, int max_len)
 			block_offset += val % 16;
 			block_length = (val / 16) + 2;
 
-			memcpy(out, out - block_offset, block_length);
-			out += block_length;
+			while (block_length > 0) {
+				if (out >= out_p + max_len - 1) break;
+				if (out >= out_p + block_offset) {
+					*out = *(out - block_offset);
+				} else {
+					*out = 0; // fallback
+				}
+				out++;
+				block_length--;
+			}
 		}
 	}
 

@@ -57,6 +57,8 @@ typedef struct
     int sample;
     int position;
     int end;
+    float phase;
+    float phase2;
 } soundstate_t;
 
 typedef struct
@@ -435,6 +437,8 @@ void update_sound_queue()
                 channel->end = sound->start + sound->end;
                 channel->sample = sound->start;
                 channel->position = sound->start * sample_per_tick;
+                channel->phase = 0.0f;
+                channel->phase2 = 0.0f;
             }
         }
         else if (sound_command.sound_mode == SOUNDMODE_MUSIC)
@@ -465,6 +469,8 @@ void update_sound_queue()
                         m_channels[i].sample = 0;
                         m_channels[i].position = 0;
                         m_channels[i].end = 32;
+                        m_channels[i].phase = 0.0f;
+                        m_channels[i].phase2 = 0.0f;
 #ifdef IS_CARDPUTER
                         printf("[Audio] Music channel %d enabled, sound_index: %d\n", i, channel_data & 0x7F);
 #endif
@@ -486,37 +492,37 @@ float get_frequency(int pitch)
     return m_tone_frequencies[pitch % 12] / 2 * (1 << (pitch / 12));
 }
 
-void render_sound(int waveform, int pitch, int volume, int position, int offset, int length, int16_t *buffer)
+void render_sound(int waveform, int pitch, int volume, int position, float *phase, float *phase2, int offset, int length, int16_t *buffer)
 {
     int16_t amplitude = (int16_t)((MAX_VOLUME / 8) * volume);
     unsigned int frequency = (unsigned int)get_frequency(pitch);
     switch (waveform)
     {
     case WAVEFORM_TRIANGLE:
-        dsp_triangle_wave(frequency, amplitude, 0, position, offset, length, buffer);
+        dsp_triangle_wave(frequency, amplitude, 0, phase, offset, length, buffer);
         break;
     case WAVEFORM_TILTEDSAW:
-        dsp_tilted_sawtooth_wave(frequency, amplitude, 0, 0.85f, position, offset, length, buffer);
+        dsp_tilted_sawtooth_wave(frequency, amplitude, 0, 0.85f, phase, offset, length, buffer);
         break;
     case WAVEFORM_SAW:
-        dsp_sawtooth_wave(frequency, amplitude, 0, position, offset, length, buffer);
+        dsp_sawtooth_wave(frequency, amplitude, 0, phase, offset, length, buffer);
         break;
     case WAVEFORM_SQUARE:
-        dsp_square_wave(frequency, amplitude, 0, position, offset, length, buffer);
+        dsp_square_wave(frequency, amplitude, 0, phase, offset, length, buffer);
         break;
     case WAVEFORM_PULSE:
-        dsp_pulse_wave(frequency, amplitude, 0, 1.0f / 3.0f, position, offset, length, buffer);
+        dsp_pulse_wave(frequency, amplitude, 0, 1.0f / 3.0f, phase, offset, length, buffer);
         break;
     case WAVEFORM_ORGAN:
-        dsp_organ_wave(frequency, amplitude, 0, 0.5f, position, offset, length, buffer);
+        dsp_organ_wave(frequency, amplitude, 0, 0.5f, phase, offset, length, buffer);
         break;
     case WAVEFORM_NOISE:
         dsp_noise(frequency, amplitude, position, offset, length, buffer);
         break;
     case WAVEFORM_PHASER:
         // A simple approximation of phaser: two triangle waves slightly detuned
-        dsp_triangle_wave(frequency, amplitude / 2, 0, position, offset, length, buffer);
-        dsp_triangle_wave((unsigned int)(frequency * 1.01f), amplitude / 2, 0, position, offset, length, buffer);
+        dsp_triangle_wave(frequency, amplitude / 2, 0, phase, offset, length, buffer);
+        dsp_triangle_wave((unsigned int)(frequency * 1.01f), amplitude / 2, 0, phase2, offset, length, buffer);
         break;
     }
 }
@@ -711,7 +717,7 @@ void render_sounds(int16_t *buffer, int total_samples)
 
                 if (final_volume > 0)
                 {
-                    render_sound(final_waveform, final_pitch, final_volume, channel->position, index, chunk_length, buffer);
+                    render_sound(final_waveform, final_pitch, final_volume, channel->position, &channel->phase, &channel->phase2, index, chunk_length, buffer);
                 }
 
                 channel->position += chunk_length;

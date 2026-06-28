@@ -46,6 +46,45 @@
 #include "gdi.h"
 #endif
 
+#ifdef IS_CARDPUTER
+#include <esp_heap_caps.h>
+// Try INTERNAL RAM first; fall back to SPIRAM so allocation never silently fails.
+void* rh_malloc(size_t size) {
+    void *p = NULL;
+    // For small or critical allocations (like the 32KB m_memory), try internal SRAM first!
+    if (size <= 32768) {
+        p = heap_caps_malloc(size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+    if (!p) p = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!p) p = malloc(size);
+    return p;
+}
+void* rh_malloc_psram(size_t size) {
+    void *p = NULL;
+    p = heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!p) p = malloc(size);
+    return p;
+}
+void* rh_realloc(void *ptr, size_t size) {
+    void *p = NULL;
+    if (size <= 32768) {
+        p = heap_caps_realloc(ptr, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+    if (!p) p = heap_caps_realloc(ptr, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!p && size > 0) p = realloc(ptr, size);
+    return p;
+}
+void* rh_realloc_psram(void *ptr, size_t size) {
+    void *p = NULL;
+    p = heap_caps_realloc(ptr, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!p && size > 0) p = realloc(ptr, size);
+    return p;
+}
+void rh_free(void *ptr) {
+    free(ptr);
+}
+#endif
+
 #ifdef SDL
 // ARGB
 uint32_t m_colors[32] = {
@@ -208,15 +247,14 @@ int p8_init()
             printf("FATAL: Failed to allocate m_memory (32KB)\n");
         }
     }
-#ifndef IS_CARDPUTER
 #ifdef OS_FREERTOS
     m_overlay_memory = (uint8_t *)rh_malloc(MEMORY_SCREEN_SIZE);
 #else
     m_overlay_memory = (uint8_t *)malloc(MEMORY_SCREEN_SIZE);
 #endif
-    memset(m_overlay_memory, (OVERLAY_TRANSPARENT_COLOR << 4) | OVERLAY_TRANSPARENT_COLOR, MEMORY_SCREEN_SIZE);
-#endif
-#endif
+    if (m_overlay_memory) {
+        memset(m_overlay_memory, (OVERLAY_TRANSPARENT_COLOR << 4) | OVERLAY_TRANSPARENT_COLOR, MEMORY_SCREEN_SIZE);
+    }
 
     memset(m_memory, 0, MEMORY_SIZE);
 
@@ -235,6 +273,7 @@ int p8_init()
     m_initialized = 1;
 
     return 0;
+#endif
 }
 
 static int p8_init_lcd(void)
@@ -1074,7 +1113,7 @@ void p8_update_input()
             break;
         }
     }
-#elif defined(IS_CARDPUTER)
+#elif defined(IS_CARDPUTER) || defined(ESP32)
     extern void m5stack_update_input();
     m5stack_update_input();
 #else
@@ -1201,10 +1240,17 @@ void p8_flip()
 
 void p8_step()
 {
+#if defined(OS_FREERTOS)
+    if (setjmp(jmpbuf_load)) {
+        return;
+    }
+    if (setjmp(jmpbuf_restart)) {
+        return;
+    }
+#endif
+
     static int time_debt = 0;
     static unsigned updates_since_last_flip = 0;
-    const int target_frame_time = 1000 / m_fps;
-
     unsigned t0 = millis();
     lua_update();
     
@@ -1218,9 +1264,18 @@ void p8_step()
     unsigned elapsed = p8_elapsed_time();
     unsigned t2 = 0, t3 = 0, t4 = 0;
 
-    time_debt += elapsed;
+    // --- Death Spiral (死の螺旋) 防止 ---
+    // 処理落ちが発生した際、elapsed が巨大になり time_debt が急増すると、
+    // 次のフレームで update が数十回連続で呼ばれ、ゲーム内時間が超高速で進み
+    // 「開始直後にゲームオーバー」になってしまうのを防ぎます。
+    if (elapsed > 100) {
+        elapsed = 100;
+    }
 
-    if (time_debt < target_frame_time || updates_since_last_flip >= m_fps) {
+    time_debt += elapsed;
+    const int target_frame_time = 1000 / m_fps;
+
+    if (time_debt < target_frame_time || updates_since_last_flip >= 3) {
         t2 = millis();
         lua_draw();
         t3 = millis();
@@ -1229,8 +1284,8 @@ void p8_step()
         p8_flip();
         t4 = millis();
 
-        if (updates_since_last_flip >= m_fps) {
-            time_debt = 0;
+        if (updates_since_last_flip >= 3) {
+            time_debt = 0; // 重すぎる場合は借金をチャラにしてスローモーションにする
         } else {
             time_debt -= target_frame_time;
             if (time_debt < -target_frame_time) time_debt = -target_frame_time;
@@ -1352,16 +1407,25 @@ void p8_reset(void)
     p8_seed_rng_state((uint32_t)time(NULL) << 16);
 }
 
-void __attribute__ ((noreturn)) p8_abort()
+void p8_abort()
 {
+#if !defined(OS_FREERTOS)
     longjmp(jmpbuf_restart, 1);
+#endif
 }
 
-void __attribute__ ((noreturn)) p8_restart()
+void p8_restart()
 {
     restart = true;
     p8_abort();
 }
+
+bool p8_is_load_requested(void) { return load_requested; }
+const char* p8_get_load_filename(void) { return load_filename; }
+const char* p8_get_load_param(void) { return load_param; }
+void p8_clear_load_request(void) { load_requested = false; }
+bool p8_is_restart_requested(void) { return restart; }
+void p8_clear_restart_request(void) { restart = false; }
 
 char *p8_resolve_relative_path(const char *filename, bool for_cstore)
 {
@@ -1386,7 +1450,7 @@ char *p8_resolve_relative_path(const char *filename, bool for_cstore)
     return NULL;
 }
 
-void __attribute__ ((noreturn)) p8_load_new(const char *filename, const char *param)
+void p8_load_new(const char *filename, const char *param)
 {
     assert(m_load_available);
 
@@ -1409,7 +1473,9 @@ void __attribute__ ((noreturn)) p8_load_new(const char *filename, const char *pa
     load_param = param ? strdup(param) : NULL;
     load_requested = true;
 
+#if !defined(OS_FREERTOS)
     longjmp(jmpbuf_load, 1);
+#endif
 }
 
 void p8_set_skip_main_loop_if_no_callbacks(bool skip)

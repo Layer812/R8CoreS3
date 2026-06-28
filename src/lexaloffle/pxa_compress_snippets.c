@@ -215,7 +215,12 @@ int pxa_decompress(uint8 *in_p, uint8 *out_p, int max_len)
 
 				// copy // don't just memcpy because might be copying self for repeating pattern
 				while (block_len > 0){
-					out_p[dest_pos] = out_p[dest_pos - block_offset];
+					if (dest_pos >= max_len - 1) break;
+					if (dest_pos >= block_offset) {
+						out_p[dest_pos] = out_p[dest_pos - block_offset];
+					} else {
+						out_p[dest_pos] = 0; // safe fallback
+					}
 					dest_pos++;
 					block_len--;
 				}
@@ -246,9 +251,11 @@ int pxa_decompress(uint8 *in_p, uint8 *out_p, int max_len)
 			// grab character and write
 			int c = literal[lpos];
 
-			out_p[dest_pos] = c;
-			dest_pos++;
-			out_p[dest_pos] = 0;
+			if (dest_pos < max_len - 1) {
+				out_p[dest_pos] = c;
+				dest_pos++;
+				out_p[dest_pos] = 0;
+			}
 
 			int i;
 			for (i = lpos; i > 0; i--)

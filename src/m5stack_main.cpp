@@ -66,6 +66,8 @@ static volatile bool g_emulator_init_failed = false;
 static volatile bool g_audio_task_started   = false;
 
 int g_volume = 255;
+bool g_held_O = false;
+bool g_held_X = false;
 
 extern "C" {
     char g_last_error_message[256] = {0};
@@ -253,8 +255,8 @@ void draw_virtual_gamepad()
     M5.Display.drawCircle(cx, cy, 4, color_dpad); // CENTER
 
     // --- STARTボタン ---
-    // さらに2ドット右、4ドット下
-    int sx = 273, sy = 166;
+    // さらに2ドット右、16ドット下
+    int sx = 273, sy = 182;
     M5.Display.drawRoundRect(sx, sy, 45, 20, 4, color_dpad); 
     M5.Display.setCursor(sx + 8, sy + 6);
     M5.Display.setTextColor(color_dpad);
@@ -268,18 +270,25 @@ void draw_virtual_gamepad()
     M5.Display.drawTriangle(vx, 102, vx - 10, 86, vx + 10, 86, color_dpad); // DOWN
 
     // --- アクションボタン (右上エリアに配置) ---
-    color_btn = M5.Display.color565(180, 180, 180);
-    int ox = 295, oy = 50; // Oボタン
-    M5.Display.drawCircle(ox, oy, 20, color_btn);
-    M5.Display.drawCircle(ox, oy, 18, color_btn);
-    M5.Display.drawCircle(ox, oy, 10, color_btn); // なかの〇をラインで
+    uint16_t color_btn_O = g_held_O ? M5.Display.color565(50, 50, 50) : M5.Display.color565(180, 180, 180);
+    uint16_t color_bg_O  = g_held_O ? M5.Display.color565(180, 180, 180) : TFT_BLACK;
 
-    int xx = 295, xy = 110; // Xボタン
-    M5.Display.drawCircle(xx, xy, 20, color_btn);
-    M5.Display.drawCircle(xx, xy, 18, color_btn);
+    int ox = 295, oy = 50; // Oボタン
+    M5.Display.fillCircle(ox, oy, 20, color_bg_O);
+    M5.Display.drawCircle(ox, oy, 20, color_btn_O);
+    M5.Display.drawCircle(ox, oy, 18, color_btn_O);
+    M5.Display.drawCircle(ox, oy, 10, color_btn_O); // なかの〇をラインで
+
+    uint16_t color_btn_X = g_held_X ? M5.Display.color565(50, 50, 50) : M5.Display.color565(180, 180, 180);
+    uint16_t color_bg_X  = g_held_X ? M5.Display.color565(180, 180, 180) : TFT_BLACK;
+
+    int xx = 295, xy = 126; // Xボタン
+    M5.Display.fillCircle(xx, xy, 20, color_bg_X);
+    M5.Display.drawCircle(xx, xy, 20, color_btn_X);
+    M5.Display.drawCircle(xx, xy, 18, color_btn_X);
     // なかの×をラインで
-    M5.Display.drawLine(xx - 7, xy - 7, xx + 7, xy + 7, color_btn);
-    M5.Display.drawLine(xx - 7, xy + 7, xx + 7, xy - 7, color_btn);
+    M5.Display.drawLine(xx - 7, xy - 7, xx + 7, xy + 7, color_btn_X);
+    M5.Display.drawLine(xx - 7, xy + 7, xx + 7, xy - 7, color_btn_X);
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +297,10 @@ void draw_virtual_gamepad()
 uint16_t get_touch_state()
 {
     uint16_t btn_state = 0;
+    bool touch_O = false;
+    bool touch_X = false;
+    int min_dist_O = 999999;
+    int min_dist_X = 999999;
     auto count = M5.Touch.getCount();
 
     for (int i = 0; i < count; i++) {
@@ -326,25 +339,78 @@ uint16_t get_touch_state()
             }
         }
         // --- STARTボタン ---
-        // 新しい位置: x=271, y=162
-        else if (tx >= 250 && tx <= 320 && ty >= 145 && ty <= 195) {
+        // 新しい位置: x=271, y=162 -> さらに16ドット下へ
+        else if (tx >= 250 && tx <= 320 && ty >= 161 && ty <= 211) {
             btn_state |= (1 << 6);
         }
         // --- アクションボタン (右上エリア) ---
-          else if (tx >= 250 && ty < 140) {
+          else if (tx >= 250 && ty < 160) {
             int dxO = tx - 295, dyO = ty - 50;
-            int dxX = tx - 295, dyX = ty - 110;
+            int dxX = tx - 295, dyX = ty - 126;
+            int dO = dxO*dxO + dyO*dyO;
+            int dX = dxX*dxX + dyX*dyX;
             
-            if (dxO*dxO + dyO*dyO < 45*45) btn_state |= (1 << 4); // O
-            if (dxX*dxX + dyX*dyX < 45*45) btn_state |= (1 << 5); // X
+            if (dO < 38*38) touch_O = true;
+            if (dX < 38*38) touch_X = true;
+            if (dO < min_dist_O) min_dist_O = dO;
+            if (dX < min_dist_X) min_dist_X = dX;
             
-            // Bダッシュジャンプ
-            if (tx >= 250 && tx <= 320 && ty > 50 && ty < 110) {
-                btn_state |= (1 << 4);
-                btn_state |= (1 << 5);
+            // Bダッシュジャンプ (意図的に真ん中を押した時だけ両方ON)
+            if (tx >= 250 && tx <= 320 && ty >= 80 && ty <= 96) {
+                touch_O = true;
+                touch_X = true;
             }
         }
     }
+
+    // O button long press logic (only toggle if touch is closer to O)
+    bool active_O = touch_O && (min_dist_O <= min_dist_X);
+    static uint32_t press_start_time_O = 0;
+    static bool prev_active_O = false;
+    static bool toggled_O_this_press = false;
+    if (active_O) {
+        if (!prev_active_O) {
+            press_start_time_O = millis();
+            toggled_O_this_press = false;
+            // Immediate release upon touch if it's currently held
+            if (g_held_O) {
+                g_held_O = false;
+                toggled_O_this_press = true;
+            }
+        } else if (!toggled_O_this_press && millis() - press_start_time_O >= 1000) {
+            g_held_O = true;
+            toggled_O_this_press = true;
+        }
+    } else {
+        toggled_O_this_press = false;
+    }
+    prev_active_O = active_O;
+    if (g_held_O || touch_O) btn_state |= (1 << 4);
+
+    // X button long press logic
+    bool active_X = touch_X && (min_dist_X <= min_dist_O);
+    static uint32_t press_start_time_X = 0;
+    static bool prev_active_X = false;
+    static bool toggled_X_this_press = false;
+    if (active_X) {
+        if (!prev_active_X) {
+            press_start_time_X = millis();
+            toggled_X_this_press = false;
+            // Immediate release upon touch if it's currently held
+            if (g_held_X) {
+                g_held_X = false;
+                toggled_X_this_press = true;
+            }
+        } else if (!toggled_X_this_press && millis() - press_start_time_X >= 1000) {
+            g_held_X = true;
+            toggled_X_this_press = true;
+        }
+    } else {
+        toggled_X_this_press = false;
+    }
+    prev_active_X = active_X;
+    if (g_held_X || touch_X) btn_state |= (1 << 5);
+
     return btn_state;
 }
 
@@ -380,12 +446,51 @@ static void audio_task(void *pvParameters)
 // Emulator C interface stubs
 // ---------------------------------------------------------------------------
 
+void process_volume_controls(uint16_t current_btn) {
+    static uint16_t global_last_btn = 0;
+    uint16_t global_pressed = current_btn & ~global_last_btn;
+    global_last_btn = current_btn;
+    bool vol_changed = false;
+    if (global_pressed & (1 << 8)) { g_volume = (g_volume > 239) ? 255 : g_volume + 16; vol_changed = true; }
+    if (global_pressed & (1 << 7)) { g_volume = (g_volume <  16) ?   0 : g_volume - 16; vol_changed = true; }
+
+    if (vol_changed) {
+        M5.Speaker.setVolume(g_volume);
+        M5.Speaker.tone(1000, 10);
+        Preferences prefs;
+        prefs.begin("ronto8", false);
+        prefs.putInt("volume", g_volume);
+        prefs.end();
+    }
+}
+
 extern "C" void m5stack_update_input()
 {
-    // Called by p8_pump_events() (inside p8_post_flip -> p8_update_input path).
-    // Write current touch state directly into m_buttons so the emulator sees it.
-    extern uint16_t m_buttons[];
-    m_buttons[0] = get_touch_state();
+    M5.update();
+    uint16_t current_btn = get_touch_state();
+    
+    process_volume_controls(current_btn);
+
+    static bool prev_held_O = false;
+    static bool prev_held_X = false;
+    if (g_emulator_ready && (g_held_O != prev_held_O || g_held_X != prev_held_X)) {
+        prev_held_O = g_held_O;
+        prev_held_X = g_held_X;
+        draw_virtual_gamepad();
+    }
+
+    if (!g_emulator_ready) {
+        g_emulator_ready = true;
+        if (!g_audio_task_started) {
+            g_audio_task_started = true;
+            xTaskCreatePinnedToCore(audio_task, "audio_task", 4096, NULL, 5, NULL, 0);
+            M5.Display.fillScreen(TFT_BLACK);
+            draw_virtual_gamepad();
+        }
+    }
+    
+    extern uint16_t m_buttons[8];
+    m_buttons[0] = current_btn;
 }
 
 extern "C" void m5stack_suspend_frame_buf(void) {}
@@ -501,6 +606,10 @@ void load_selected_rom()
 
     if (p8_init_file_with_param(current_rom_path.c_str(), NULL) == 0) {
         g_emulator_ready = true;
+        // Clear the line buffers so the previous game's frame doesn't flash
+        extern uint16_t *line_buffer[2];
+        if (line_buffer[0]) memset(line_buffer[0], 0, 192 * 192 * 2);
+        if (line_buffer[1]) memset(line_buffer[1], 0, 192 * 192 * 2);
     } else {
         g_emulator_init_failed = true;
     }
@@ -561,31 +670,10 @@ void setup()
     draw_virtual_gamepad(); // コントローラーの描画は最初の一回だけ
 }
 
+void process_volume_controls(uint16_t current_btn);
+
 void loop()
 {
-    M5.update();
-
-    // Combine touch input and IMU tilt input
-    uint16_t touch_btn = get_touch_state();
-    uint16_t current_btn = touch_btn;
-
-    // Volume controls
-    static uint16_t global_last_btn = 0;
-    uint16_t global_pressed = current_btn & ~global_last_btn;
-    global_last_btn = current_btn;
-    bool vol_changed = false;
-    if (global_pressed & (1 << 8)) { g_volume = (g_volume > 239) ? 255 : g_volume + 16; vol_changed = true; }
-    if (global_pressed & (1 << 7)) { g_volume = (g_volume <  16) ?   0 : g_volume - 16; vol_changed = true; }
-    if (vol_changed) {
-        M5.Speaker.setVolume(g_volume);
-        M5.Speaker.tone(1000, 10); // Lower pitch, shorter duration for a solid "click"
-        
-        Preferences prefs;
-        prefs.begin("ronto8", false);
-        prefs.putInt("volume", g_volume);
-        prefs.end();
-    }
-
     if (g_emulator_init_failed) {
         static bool shown = false;
         if (!shown) {
@@ -595,8 +683,16 @@ void loop()
             M5.Display.println("ROM init failed.");
             M5.Display.println("Please reset and choose another cart.");
         }
+        return;
+    }
 
-    } else if (!g_emulator_ready) {
+    if (!g_emulator_ready) {
+        M5.update();
+        uint16_t touch_btn = get_touch_state();
+        uint16_t current_btn = touch_btn;
+        
+        process_volume_controls(current_btn);
+
         // ROM browser: debounce with edge detection + repeat (long-press)
         static uint16_t last_btn = 0;
         static uint32_t hold_timer = 0;
@@ -623,6 +719,20 @@ void loop()
         if (pressed & (1 << 2)) { // UP
             if (g_browser_cursor > 0) {
                 g_browser_cursor--;
+                cursor_moved = true;
+            }
+        }
+        if (pressed & (1 << 1)) { // RIGHT (Page Down)
+            if (g_browser_cursor < g_browser_count - 1) {
+                g_browser_cursor += 9;
+                if (g_browser_cursor >= g_browser_count) g_browser_cursor = g_browser_count - 1;
+                cursor_moved = true;
+            }
+        }
+        if (pressed & (1 << 0)) { // LEFT (Page Up)
+            if (g_browser_cursor > 0) {
+                g_browser_cursor -= 9;
+                if (g_browser_cursor < 0) g_browser_cursor = 0;
                 cursor_moved = true;
             }
         }
@@ -660,26 +770,11 @@ void loop()
         }
 
     } else if (g_emulator_ready && !g_audio_task_started) {
-        // First frame after ROM loaded: show title strip, start audio task
-        uint16_t r4_yellow = M5.Display.color565(253, 192, 0);
-        M5.Display.fillRect(0, 0, 320, 28, r4_yellow);
-        M5.Display.setTextColor(TFT_BLACK, r4_yellow);
-        M5.Display.setTextSize(2);
-        
-        M5.Display.setCursor(5, 9);
-        M5.Display.print("R8 ");
-
-        String t = g_cart_title;
-        if (t.length() > 18) t = t.substring(0, 18);
-        M5.Display.println(t);
-
-        xTaskCreatePinnedToCore(audio_task, "audio_task", 4096, NULL, configMAX_PRIORITIES - 1, NULL, 0);
         g_audio_task_started = true;
+        xTaskCreatePinnedToCore(audio_task, "audio_task", 4096, NULL, 5, NULL, 0);
+        M5.Display.fillScreen(TFT_BLACK);
         draw_virtual_gamepad();
-
-    } else if (g_emulator_ready) {
-        // Game running: update input then step one emulator frame
-        m_buttons[0] = current_btn;
+    } else {
+        // Game running
         p8_step();
-    }
-}
+    }}

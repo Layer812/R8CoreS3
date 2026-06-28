@@ -10,3 +10,5 @@ sample/
 *.bin
 .agents
 picotool
+*.lua
+master_catalog_rich.csv

@@ -110,7 +110,7 @@ static void callTM (lua_State *L, const TValue *f, const TValue *p1,
 
 void luaV_gettable (lua_State *L, const TValue *t, TValue *key, StkId val) {
   // PICO-8 0.2.5 changelog: sub(str,pos,pos) can be written as str[pos]
-  if (ttisstring(t)) {
+  if (ttisstring(t) && ttisnumber(key)) {
     const char *s = svalue(t);
     size_t ls = tsvalue(t)->len;
     int k = fix32_to_int(nvalue(key));
@@ -129,6 +129,16 @@ void luaV_gettable (lua_State *L, const TValue *t, TValue *key, StkId val) {
       const TValue *res = luaH_get(h, key); /* do a primitive get */
       if (!ttisnil(res) ||  /* result is not nil? */
           (tm = fasttm(L, h->metatable, TM_INDEX)) == NULL) { /* or no TM? */
+        
+        if (ttisnil(res) && tm == NULL && ttisstring(key)) {
+            Table *g = hvalue(luaH_getint(hvalue(&G(L)->l_registry), LUA_RIDX_GLOBALS));
+            const TValue *gres = luaH_get(g, key);
+            if (ttisfunction(gres)) {
+                setobj2s(L, val, gres);
+                return;
+            }
+        }
+        
         setobj2s(L, val, res);
         return;
       }
