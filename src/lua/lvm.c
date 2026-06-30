@@ -46,15 +46,32 @@ const TValue *luaV_tonumber (const TValue *obj, TValue *n) {
 
 
 int luaV_tostring (lua_State *L, StkId obj) {
-  if (!ttisnumber(obj))
-    return 0;
-  else {
+  if (ttisnumber(obj)) {
     char s[LUAI_MAXNUMBER2STR];
     lua_Number n = nvalue(obj);
     int l = lua_number2str(s, n);
     setsvalue2s(L, obj, luaS_newlstr(L, s, l));
     return 1;
   }
+  /* ここから PICO-8互換: エラーを出さずに暗黙的に文字列へ変換する */
+  else if (ttisnil(obj)) {
+    setsvalue2s(L, obj, luaS_newlstr(L, "[nil]", 5));
+    return 1;
+  }
+  else if (ttisboolean(obj)) {
+    int b = bvalue(obj);
+    setsvalue2s(L, obj, luaS_newlstr(L, b ? "true" : "false", b ? 4 : 5));
+    return 1;
+  }
+  else if (ttistable(obj)) {
+    setsvalue2s(L, obj, luaS_newlstr(L, "[table]", 7));
+    return 1;
+  }
+  else if (ttisfunction(obj)) {
+    setsvalue2s(L, obj, luaS_newlstr(L, "[function]", 10));
+    return 1;
+  }
+  return 0;
 }
 
 
@@ -281,7 +298,6 @@ static int l_strcmp (const TString *ls, const TString *rs) {
   }
 }
 
-
 int luaV_lessthan (lua_State *L, const TValue *l, const TValue *r) {
   int res;
   if (ttisnumber(l) && ttisnumber(r))
@@ -289,10 +305,9 @@ int luaV_lessthan (lua_State *L, const TValue *l, const TValue *r) {
   else if (ttisstring(l) && ttisstring(r))
     return l_strcmp(rawtsvalue(l), rawtsvalue(r)) < 0;
   else if ((res = call_orderTM(L, l, r, TM_LT)) < 0)
-    luaG_ordererror(L, l, r);
+    return 0; // PICO-8互換: エラーで強制終了せず、単に false (0) を返す
   return res;
 }
-
 
 int luaV_lessequal (lua_State *L, const TValue *l, const TValue *r) {
   int res;
@@ -303,10 +318,9 @@ int luaV_lessequal (lua_State *L, const TValue *l, const TValue *r) {
   else if ((res = call_orderTM(L, l, r, TM_LE)) >= 0)  /* first try `le' */
     return res;
   else if ((res = call_orderTM(L, r, l, TM_LT)) < 0)  /* else try `lt' */
-    luaG_ordererror(L, l, r);
+    return 0; // PICO-8互換: エラーで強制終了せず、単に false (0) を返す
   return !res;
 }
-
 
 /*
 ** equality of Lua values. L == NULL means raw equality (no metamethods)

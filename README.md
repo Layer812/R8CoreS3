@@ -1,4 +1,4 @@
-# RONTO8 for M5Stack CoreS3 (v0.6)
+# RONTO8 for M5Stack CoreS3 (v0.61)
 
 ![RONTO8 - Touhou](toho.gif)
 
@@ -37,10 +37,10 @@ RONTO8は、[**M5Stack CoreS3**](https://docs.m5stack.com/ja/core/CoreS3) 専用
 
 ### Via [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/intro) (Recommended)
 You can easily install RONTO8 using [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/intro) with the following share code:
-- **Share Code**: `l4rGEiQ8i80r5yIm`
+- **Share Code**: `dMCJ0QAV7oI00aqr`
 
 [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/intro)のシェアコード検索から簡単にインストールできます：
-- **シェアコード**: `l4rGEiQ8i80r5yIm`
+- **シェアコード**: `dMCJ0QAV7oI00aqr`
 
 ### Building from Source / ソースからビルドする場合
 
@@ -87,15 +87,15 @@ RONTO8 is heavily based on the incredible work of the open-source community:
 | PICOWARE | szczm_ | [Link](https://www.lexaloffle.com/bbs/?tid=34751) | NG(no picoware) |  |
 | Porklike | Krystman | [Link](https://www.lexaloffle.com/bbs/?tid=37045) | OK | NG(lack sound) |
 | FUZ | Jusiv | [Link](https://www.lexaloffle.com/bbs/?tid=34188) | OK | OK |
-| ISLANDER - Idle Crafting Game | CarsonK | [Link](https://www.lexaloffle.com/bbs/?tid=39471) | TBC |  |
-| Pico Zombie Garden: A PvZ Demake | FlyingSmog | [Link](https://www.lexaloffle.com/bbs/?tid=42252) | TBC |  |
-| Kalikan | LouieChapm | [Link](https://www.lexaloffle.com/bbs/?tid=53315) | TBC |  |
-| Combo Pool | NuSan | [Link](https://www.lexaloffle.com/bbs/?tid=3467) | TBC |  |
-| Pico World Race 1.2 | PAK9 | [Link](https://www.lexaloffle.com/bbs/?tid=46495) | TBC |  |
-| BAS | yokozuna | [Link](https://www.lexaloffle.com/bbs/?tid=54986) | TBC |  |
-| Low Knight | krajzeg | [Link](https://www.lexaloffle.com/bbs/?tid=37055) | TBC |  |
-| Mistigri | benjamin_soule | [Link](https://www.lexaloffle.com/bbs/?tid=3421) | TBC |  |
-| Into Ruins | ericb | [Link](https://www.lexaloffle.com/bbs/?tid=49928) | TBC |  |
+| ISLANDER - Idle Crafting Game | CarsonK | [Link](https://www.lexaloffle.com/bbs/?tid=39471) | OK(slow) | ON |
+| Pico Zombie Garden: A PvZ Demake | FlyingSmog | [Link](https://www.lexaloffle.com/bbs/?tid=42252) | NG(mouse needed) |  |
+| Kalikan | LouieChapm | [Link](https://www.lexaloffle.com/bbs/?tid=53315) | NG |  |
+| Combo Pool | NuSan | [Link](https://www.lexaloffle.com/bbs/?tid=3467) | OK | NG(lack sound) |
+| Pico World Race 1.2 | PAK9 | [Link](https://www.lexaloffle.com/bbs/?tid=46495) | NG |  |
+| BAS | yokozuna | [Link](https://www.lexaloffle.com/bbs/?tid=54986) | OK | OK |
+| Low Knight | krajzeg | [Link](https://www.lexaloffle.com/bbs/?tid=37055) | NG |  |
+| Mistigri | benjamin_soule | [Link](https://www.lexaloffle.com/bbs/?tid=3421) | NG>OK | OK |
+| Into Ruins | ericb | [Link](https://www.lexaloffle.com/bbs/?tid=49928) | NG |  |
 | Beckon the Hellspawn | LokiStriker | [Link](https://www.lexaloffle.com/bbs/?tid=51555) | TBC |  |
 | Woodworm | spratt | [Link](https://www.lexaloffle.com/bbs/?tid=142717) | TBC |  |
 | Pico Dino - Chrome's T-rex game reimagined | Yolwoocle | [Link](https://www.lexaloffle.com/bbs/?tid=40759) | TBC |  |
