@@ -547,6 +547,28 @@ int p8_init_file_with_param(const char *file_name, const char *param)
     return ret;
 }
 
+
+/*
+ * Safe in-process cart reload for CoreS3. p8_restart() uses longjmp through
+ * p8_init_common()'s returned stack frame on this target; do NOT call it.
+ * Keep the existing audio engine and framebuffer allocations alive.
+ */
+int p8_reload_file_with_param(const char *file_name, const char *param)
+{
+    if (!file_name || !file_name[0] || !m_initialized || !m_memory) return -1;
+    lua_shutdown_api();
+    p8_close_cartdata();
+    // The Lua callback cache holds pointers into the destroyed Lua state.
+    extern const void *m_lua_init, *m_lua_update, *m_lua_update60, *m_lua_draw;
+    m_lua_init = NULL;
+    m_lua_update = NULL;
+    m_lua_update60 = NULL;
+    m_lua_draw = NULL;
+    m_start_time = 0;
+    audio_music(-1, 0, 0); // Clear old music/SFX before the replacement cart starts.
+    return p8_init_file_with_param(file_name, param);
+}
+
 int p8_init_ram(uint8_t *buffer, int size)
 {
     if (!m_initialized)
