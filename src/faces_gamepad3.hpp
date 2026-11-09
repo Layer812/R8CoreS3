@@ -1,5 +1,5 @@
 #pragma once
-// RONTO8 CoreS3 Faces Bottom3 + Gamepad3 (A004-V3), R5
+// RONTO8 CoreS3 Faces Bottom3 + Gamepad3 (A004-V3), R6
 // Internal I2C SDA=GPIO12 SCL=GPIO11, IRQ=GPIO10, default address 0x08.
 // No panel firmware update or persistent peripheral writes.
 #include <Arduino.h>
@@ -64,7 +64,10 @@ struct Device {
         uint8_t model = 0;
         if (registerRead(addr, 0xD0, model) && model == 0x03) {
             if (official.begin(&M5.In_I2C, addr, freq) == M5FACES_OK) {
-                official.setInterruptPin(irq_pin, false);
+                // Do not configure IRQ gating on the official driver.
+                // Its demonstrated CoreS3 integration uses update() on every tick.
+                // Setting setInterruptPin(...,false) in R4/R5 prevented all reads
+                // on installations where the IRQ voltage was not sampled LOW.
                 address = addr;
                 model_id = model;
                 fw_version = 0;
@@ -73,13 +76,10 @@ struct Device {
                 official_mode = true;
                 present.store(true);
                 status = Status::Ready;
-                // Published V03 protocol uses direct 1-byte READ for key state.
-                // Do not prefix register 0x00 as the library's update() does.
-                if (digitalRead(irq_pin) == LOW) {
-                    uint8_t sample = 0xFF;
-                    if (directRead(addr, sample)) raw = sample;
-                }
-                Serial.printf("RONTO8 Faces R5: official gamepad addr=%02X fw=%02X\n", addr, fw_version);
+                // The official Gamepad3 driver handles v03/v04 idle 0x00 bytes.
+                // Input polling must work without an IRQ signal.
+                if (official.update()) raw = official.getState().raw;
+                Serial.printf("RONTO8 Faces R6: official gamepad addr=%02X fw=%02X\n", addr, fw_version);
                 return true;
             }
         }
@@ -94,7 +94,7 @@ struct Device {
                 official_mode = false;
                 present.store(true);
                 status = Status::Legacy;
-                Serial.println("RONTO8 Faces R5: legacy key read at 0x08");
+                Serial.println("RONTO8 Faces R6: legacy key read at 0x08");
                 return true;
             }
         }
@@ -125,20 +125,47 @@ struct Device {
         if (!present.load()) classifyFailure();
         last_probe_ms = millis();
         last_scan_ms = last_probe_ms;
-        Serial.printf("RONTO8 Faces R5: bus=%d SDA=%d SCL=%d 0x08ACK=%d ID=%02X IRQ=%d state=%s\n",
+        Serial.printf("RONTO8 Faces R6: bus=%d SDA=%d SCL=%d 0x08ACK=%d ID=%02X IRQ=%d state=%s\n",
                       bus_ready, 12, 11, ack(0x08), model_id, digitalRead(irq_pin), label());
     }
 
     void update() {
         const uint32_t now = millis();
         if (present.load()) {
-            // Read events identically in official/legacy modes.
-            // A key-state transaction must have no register prefix (M5 protocol).
-            if (digitalRead(irq_pin) == LOW) {
-                for (int i=0; i<3 && digitalRead(irq_pin)==LOW; ++i) {
+            // R6: same input path as M5Stack's working Gamepad3 Arduino demo.
+            // update() is called regardless of IRQ GPIO level. The official
+            // driver filters blind-poll stale 0x00 and exposes full key state.
+            if (official_mode) {
+                if (official.update()) {
+                    const uint8_t next = official.getState().raw;
+                    if (raw != next) {
+                        raw = next;
+                        Serial.printf("RONTO8 R6 PAD raw=%02X buttons=%04X IRQ=%d\n",
+                                      raw, buttons(), digitalRead(irq_pin));
+                    }
+                } else if (digitalRead(irq_pin) == LOW) {
+                    // Firmware v03 event protocol: direct 1-byte I2C read.
+                    // Only try this fallback when IRQ really indicates data.
                     uint8_t next = 0xFF;
-                    if (!directRead(address, next)) break;
-                    raw = next;
+                    if (directRead(address, next) && raw != next) {
+                        raw = next;
+                        Serial.printf("RONTO8 R6 PAD direct=%02X buttons=%04X\n",
+                                      raw, buttons());
+                    }
+                }
+            } else {
+                // Legacy firmware uses direct-read events. Allow a modest
+                // 15ms blind polling fallback when the IRQ wire isn't routed.
+                static uint32_t last_direct_ms = 0;
+                if (digitalRead(irq_pin) == LOW ||
+                    (uint32_t)(now-last_direct_ms) >= 15u) {
+                    last_direct_ms = now;
+                    uint8_t next = 0xFF;
+                    if (directRead(address, next) && next != raw) {
+                        raw = next;
+                        Serial.printf("RONTO8 R6 LEGACY raw=%02X buttons=%04X\n",
+                                      raw, buttons());
+                    }
                 }
             }
             if ((uint32_t)(now-last_probe_ms) >= 5000u) {
@@ -175,6 +202,20 @@ struct Device {
                     connectAt(candidate, false)) return;
             }
         }
+    }
+
+    const char* keyLabel() const {
+        const uint16_t b=buttons();
+        if (b & (1u<<6)) return "R6 START";
+        if (b & (1u<<4)) return "R6 A";
+        if (b & (1u<<5)) return "R6 B";
+        if (b & (1u<<2)) return "R6 UP";
+        if (b & (1u<<3)) return "R6 DOWN";
+        if (b & (1u<<0)) return "R6 LEFT";
+        if (b & (1u<<1)) return "R6 RIGHT";
+        if (b & (1u<<8)) return "R6 VOL+";
+        if (b & (1u<<7)) return "R6 VOL-";
+        return "R6 PAD";
     }
 
     const char* label() const {
