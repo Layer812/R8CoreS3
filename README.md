@@ -68,6 +68,20 @@ RUN_THIS_R8CORES3_FACES_APP_ONLY.cmd COM10
 ```
 The script updates this development branch, builds, reads and verifies the installed partition table, and flashes only the selected APP slot. Do not use a generic `pio run --target upload` command if protecting existing NVS/storage and partition table is necessary.
 
+### Official-driver update (R4) / 公式ドライバ対応
+
+The R4 development build follows the official M5Stack CoreS3 Gamepad3 Arduino example:
+- `cfg.fallback_board = m5::board_t::board_M5StackCoreS3`
+- `M5.In_I2C` initialized with `M5.getPin(in_i2c_sda / in_i2c_scl)` if needed
+- `M5Faces_Gamepad3.begin(&M5.In_I2C)`, `update()`, and model-ID verification
+- A user-visible **R4 PAD** or **R4 TOUCH** in the browser header, and **R4 GAMEPAD READY** or **R4 NO GAMEPAD** on the splash
+
+The preceding hand-written key reader is no longer used. Official M5Faces is pinned by commit SHA. The physical keypad must be fully seated in Faces Bottom3. No automatic firmware update/IAP is performed on Gamepad3.
+
+**R4はM5Stack公式Gamepad3ドライバを採用。** 画面の「R4 PAD / R4 TOUCH」で新しいファームウェアの起動と検出状態を区別できます。Gamepad3の内蔵ファームウェアは変更しません。
+
+**Verification:** R4 source was updated; R4 build / on-device recognition remains to be confirmed. The previous build and APP-only flash did succeed.
+
 ## ⚙️ Installation / インストール
 
 ### Via [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/intro) (Recommended)
