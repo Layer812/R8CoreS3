@@ -847,7 +847,9 @@ static void draw_select_menu()
     M5.Display.setTextColor(TFT_BLACK, yellow);
     M5.Display.setTextSize(2);
     M5.Display.setCursor(18, 10);
-    M5.Display.print("RONTO8  SETTINGS");
+    M5.Display.print("RONTO8 SETTINGS");
+    M5.Display.setCursor(276, 10);
+    M5.Display.print("R7");
 
     const int rows = select_menu_count();
     for (int i = 0; i < rows; ++i) {
@@ -963,6 +965,8 @@ static void update_select_menu()
             close_select_menu();
         }
     }
+    // The menu does not need the full game loop's frame rate.
+    delay(8);
 }
 
 void process_volume_controls(uint16_t current_btn);
