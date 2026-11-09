@@ -98,6 +98,18 @@ According to the M5Stack A004-V3 I2C specification, **key reads are direct singl
 
 **Status:** R5 code-only revision, build/device verification pending. Use the existing Windows R3 safe APP-only command: `RUN_THIS_R8CORES3_FACES_APP_ONLY.cmd COM10`. **Do not write bootloader/partition/NVS/storage.**
 
+### R6 — Gamepad3 ready but buttons unresponsive / 認識後のキー入力修正
+
+With R5, a recognized Gamepad3 could show **GAMEPAD READY** while no buttons reached RONTO8 because key reads were gated on `digitalRead(GPIO10) == LOW`. The official CoreS3 Gamepad3 sample instead repeatedly calls `M5Faces_Gamepad3::update()` without configuring the IRQ pin.
+
+R6 removes that gate for official Gamepad3 firmware and uses the official driver's polling on every input tick. When IRQ actually signals an unread event but the official update sees no state change, a direct one-byte I2C read remains as a fallback. Legacy firmware retains a bounded direct-read path.
+
+The ROM browser header now shows **R6 PAD**, then **R6 UP / R6 DOWN / R6 LEFT / R6 RIGHT / R6 A / R6 B / R6 START** while a physical button is pressed. The display remains full 320×240 when the panel is detected.
+
+**「GAMEPAD READY」なのに操作できない問題:** R5のIRQレベル依存を修正し、公式ドライバによるキー取得を毎回実行します。ROM一覧上部には入力中の物理ボタンを大きな文字で表示します。既存のR3 APP-onlyコマンド `RUN_THIS_R8CORES3_FACES_APP_ONLY.cmd COM10` で更新可能です。
+
+**State:** GitHub source updated, static checks passed. R6 firmware build and physical verification are pending. The release branch, M5Burner build, bootloader, partitions, NVS and storage are not changed.
+
 ## ⚙️ Installation / インストール
 
 ### Via [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/intro) (Recommended)
