@@ -4,7 +4,33 @@
  * M5Stack CoreS3 entry point and hardware abstraction layer for RONTO8.
  */
 #include <M5Unified.h>
+#include <Adafruit_NeoPixel.h>
+#include <pngle.h>  // Already used by the existing PICO-8 cartridge parser.
+#include "faces_gamepad3.hpp"
 
+// Version shown at startup; keep in sync with the published RONTO8 release.
+static constexpr char kRonto8Version[] = "1.01";
+
+static ronto_faces3::Device g_faces;
+static constexpr int kTouchGameSize = 192;
+static constexpr int kPhysicalWidth = 320;
+static constexpr int kPhysicalHeight = 240;
+static constexpr size_t kBufferPixels = kPhysicalWidth * kPhysicalHeight;
+static std::atomic<bool> g_frame_physical{false};
+
+// Faces Bottom3 A168: LED switch must be at G25 (CoreS3 GPIO5).
+// G15 would connect to CoreS3 GPIO13 (speaker I2S DOUT) and can cause full-white LEDs.
+static Adafruit_NeoPixel g_base_leds(10, 5, NEO_GRB + NEO_KHZ800);
+static bool g_base_leds_initialized = false;
+static void clear_base_leds()
+{
+    if (g_base_leds_initialized) return;
+    g_base_leds.begin();
+    g_base_leds.setBrightness(0);
+    g_base_leds.clear();
+    g_base_leds.show();
+    g_base_leds_initialized = true;
+}
 SemaphoreHandle_t flipSem;
 SemaphoreHandle_t doneSem;
 uint16_t* line_buffer[2];
@@ -14,7 +40,8 @@ void flipTask(void *pvParameters) {
     while (1) {
         xSemaphoreTake(flipSem, portMAX_DELAY);
         if (render_idx >= 0 && line_buffer[0] != NULL) {
-            M5.Display.pushImageDMA(76, 32, 192, 192, line_buffer[render_idx]);
+            if (g_frame_physical.load()) M5.Display.pushImageDMA(0, 0, kPhysicalWidth, kPhysicalHeight, line_buffer[render_idx]);
+            else M5.Display.pushImageDMA(76, 32, kTouchGameSize, kTouchGameSize, line_buffer[render_idx]);
         }
         render_idx = 1 - render_idx;
         xSemaphoreGive(doneSem);
@@ -29,6 +56,7 @@ void flipTask(void *pvParameters) {
 #include <freertos/task.h>
 #include <Preferences.h>
 #include <math.h>
+#include <atomic>
 
 extern "C" {
 #include "p8_emu.h"
@@ -68,6 +96,22 @@ static volatile bool g_audio_task_started   = false;
 int g_volume = 255;
 bool g_held_O = false;
 bool g_held_X = false;
+
+// Gamepad3 SELECT: simple readable settings panel, separate from PICO-8
+// START/pause. The PICO engine stops stepping while this menu is visible.
+static bool g_select_menu_open = false;
+static bool g_select_menu_pending = false;
+static bool g_select_pressed_prev = false;
+static bool g_swallow_until_release = false;
+static std::atomic<bool> g_audio_hold{false};
+static uint16_t g_menu_prev_btn = 0;
+static int g_menu_selected = 0;
+static bool g_menu_volume_dirty = false;
+static String g_current_rom_path;
+
+static void draw_select_menu();
+static void begin_select_menu();
+static void update_select_menu();
 
 extern "C" {
     char g_last_error_message[256] = {0};
@@ -140,56 +184,346 @@ static void scan_browser_directory(const String& path)
     dir.close();
 }
 
+// ---------------------------------------------------------------------------
+// RONTO8 arcade visual identity: 1990s-style yellow/black throughout the UI.
+// Native 320x240 primitives: no external fonts, bitmaps, heap use, or SD reads.
+// ---------------------------------------------------------------------------
+static constexpr int kBrowserRows = 6;
+static constexpr int kBrowserRowH = 24;
+
+static uint16_t arcade_gold() { return M5.Display.color565(255, 196, 0); }
+
+// Large blocky original R8 wordmark. 5x7 pixels per glyph at adjustable scale.
+// Created as geometry rather than bundling artwork or requiring extra assets.
+static void arcade_logo(int x, int y, int scale)
+{
+    static const uint8_t letters[2][7] = {
+        { 0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11 }, // R
+        { 0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E }  // 8
+    };
+    for (int letter = 0; letter != 2; ++letter) {
+        for (int cy = 0; cy != 7; ++cy) {
+            for (int cx = 0; cx != 5; ++cx) {
+                if (letters[letter][cy] & (0x10 >> cx)) {
+                    M5.Display.fillRect(x + (letter * 6 + cx) * scale,
+                                        y + cy * scale, scale, scale, TFT_BLACK);
+                }
+            }
+        }
+    }
+}
+
+static void arcade_title_bar(const char* heading)
+{
+    const uint16_t gold = arcade_gold();
+    M5.Display.fillRect(0, 0, 320, 34, gold);
+    arcade_logo(8, 5, 3);
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(TFT_BLACK, gold);
+    M5.Display.setCursor(58, 9);
+    M5.Display.print(heading);
+    M5.Display.fillRect(8, 33, 304, 3, TFT_BLACK);
+}
+
+static String arcade_short_name(const String& name, size_t max_chars)
+{
+    if (name.length() <= max_chars) return name;
+    if (max_chars < 5) return name.substring(0, max_chars);
+    return name.substring(0, max_chars - 2) + "..";
+}
+
+// ---------------------------------------------------------------------------
+// R10 actual ROM thumbnails, read-only. PICO-8 .p8.png carts contain a visible
+// 128x128 label at pixels (16..143, 24..151) of their 160x205 PNG image.
+// .p8 text carts can optionally include the __label__ section. Both paths
+// use the existing PNG decoder/SD VFS without starting Lua or modifying ROMs.
+// ---------------------------------------------------------------------------
+static constexpr int kPreviewSide = 96;
+static uint16_t* g_preview_pixels = nullptr; // Allocated once in PSRAM.
+static String g_preview_path;
+static uint32_t g_preview_since_ms = 0;
+static bool g_preview_done = false;
+static bool g_preview_ok = false;
+
+static bool arcade_preview_buffer()
+{
+    if (g_preview_pixels) return true;
+    g_preview_pixels = (uint16_t*)heap_caps_malloc(
+        kPreviewSide * kPreviewSide * sizeof(uint16_t),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!g_preview_pixels) {
+        g_preview_pixels = (uint16_t*)heap_caps_malloc(
+            kPreviewSide * kPreviewSide * sizeof(uint16_t), MALLOC_CAP_8BIT);
+    }
+    return g_preview_pixels != nullptr;
+}
+
+struct ArcadePreviewDecode {
+    uint16_t* pixels;
+    uint32_t pixel_count;
+};
+
+static void arcade_png_pixel(pngle_t* png, unsigned int x, unsigned int y,
+                             unsigned int, unsigned int,
+                             const unsigned char rgba[4])
+{
+    auto* data = static_cast<ArcadePreviewDecode*>(pngle_get_user_data(png));
+    if (!data || !data->pixels || x < 16 || x >= 144 || y < 24 || y >= 152)
+        return;
+
+    // Nearest-neighbor 128 -> 96. The callback's 32k pixels never touch LCD.
+    const int dx = (int)((x - 16) * kPreviewSide / 128);
+    const int dy = (int)((y - 24) * kPreviewSide / 128);
+    const uint16_t rgb = rgba[3] < 128 ? 0 :
+        (uint16_t)(((uint16_t)(rgba[0] & 0xF8) << 8) |
+                   ((uint16_t)(rgba[1] & 0xFC) << 3) |
+                   ((uint16_t)(rgba[2] & 0xF8) >> 3));
+    data->pixels[dy * kPreviewSide + dx] = rgb;
+    ++data->pixel_count;
+}
+
+static bool arcade_load_png_thumbnail(FILE* file)
+{
+    static constexpr uint8_t signature[8] = {137, 80, 78, 71, 13, 10, 26, 10};
+    uint8_t header[8] = {0};
+    if (fread(header, 1, 8, file) != 8 ||
+        memcmp(header, signature, sizeof(signature)) != 0 ||
+        fseek(file, 0, SEEK_SET) != 0) return false;
+
+    pngle_t* png = pngle_new();
+    if (!png) return false;
+    ArcadePreviewDecode decode{g_preview_pixels, 0};
+    pngle_set_user_data(png, &decode);
+    pngle_set_draw_callback(png, arcade_png_pixel);
+
+    bool ok = true;
+    size_t total = 0;
+    uint8_t chunk[1024];
+    while (true) {
+        const size_t n = fread(chunk, 1, sizeof(chunk), file);
+        if (!n) {
+            if (ferror(file)) ok = false;
+            break;
+        }
+        total += n;
+        if (total > 2 * 1024 * 1024 || pngle_feed(png, chunk, n) < 0) {
+            ok = false;
+            break;
+        }
+    }
+    ok = ok && pngle_get_width(png) == 160 &&
+         pngle_get_height(png) == 205 && decode.pixel_count >= 16384;
+    pngle_destroy(png);
+    return ok;
+}
+
+static bool arcade_load_p8_thumbnail(FILE* file)
+{
+    // Existing p8_parser.c palette (32 colors), preconverted to RGB565.
+    static constexpr uint16_t palette[32] = {
+        0x0000,0x194a,0x792a,0x042a,0xaa86,0x5aa9,0xc618,0xff9d,
+        0xf809,0xfd00,0xff64,0x0726,0x2d7f,0x83b3,0xfbb5,0xfe75,
+        0x28c2,0x10e6,0x4106,0x128b,0x7165,0x4987,0xa44f,0xf76f,
+        0xb88a,0xfb64,0xaf25,0x05a9,0x02d6,0x722c,0xfb6b,0xfcf0
+    };
+    static const char* symbols = "0123456789abcdefghijklmnopqrstuv";
+    char line[192];
+    bool in_label = false;
+    unsigned src_row = 0;
+    size_t read_budget = 0;
+
+    // The 1 MB byte budget avoids spending seconds scanning unusually long
+    // Lua data, while supporting ordinary text-cart __label__ sections.
+    while (fgets(line, sizeof(line), file)) {
+        read_budget += strlen(line);
+        if (read_budget > 1024 * 1024) break;
+        if (!in_label) {
+            if (strncmp(line, "__label__", 9) == 0) in_label = true;
+            continue;
+        }
+        if (strncmp(line, "__", 2) == 0) break;
+        const size_t len = strcspn(line, "\r\n");
+        if (len < 128) continue;
+        if (src_row >= 128) break;
+        for (int dy = 0; dy < kPreviewSide; ++dy) {
+            if ((unsigned)(dy * 128 / kPreviewSide) != src_row) continue;
+            uint16_t* out = g_preview_pixels + dy * kPreviewSide;
+            for (int dx = 0; dx < kPreviewSide; ++dx) {
+                const char symbol = line[dx * 128 / kPreviewSide];
+                const char* found = strchr(symbols, symbol);
+                out[dx] = found ? palette[found - symbols] : 0;
+            }
+        }
+        ++src_row;
+    }
+    return in_label && src_row == 128;
+}
+
+static bool arcade_load_thumbnail(const String& path)
+{
+    if (!arcade_preview_buffer()) return false;
+    memset(g_preview_pixels, 0, kPreviewSide * kPreviewSide * sizeof(uint16_t));
+
+    String extension = path;
+    extension.toLowerCase();
+    const bool png_cart = extension.endsWith(".png");
+    const bool text_cart = extension.endsWith(".p8");
+    if (!png_cart && !text_cart) return false;
+
+    // Same VFS path used by load_selected_rom(). Read-only, never write SD.
+    const String full_path = String("/sd") + path;
+    FILE* file = fopen(full_path.c_str(), "rb");
+    if (!file) return false;
+    const bool ok = png_cart ? arcade_load_png_thumbnail(file) :
+                               arcade_load_p8_thumbnail(file);
+    fclose(file);
+    return ok;
+}
+
+static void arcade_request_preview(int cursor)
+{
+    String selected;
+    if (cursor >= 0 && cursor < g_browser_count && !g_browser_is_dir[cursor])
+        selected = g_browser_path +
+                   String(g_browser_name_buf + g_browser_name_offsets[cursor]);
+    if (selected == g_preview_path) return;
+    g_preview_path = selected;
+    g_preview_since_ms = millis();
+    g_preview_done = false;
+    g_preview_ok = false;
+}
+
+static void arcade_browser_info(int cursor)
+{
+    const uint16_t gold = arcade_gold();
+    arcade_request_preview(cursor);
+    M5.Display.fillRect(8, 67, 103, 143, gold);
+    M5.Display.drawRect(8, 67, 103, 143, TFT_BLACK);
+    M5.Display.fillRect(12, 71, 95, 21, TFT_BLACK);
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(gold, TFT_BLACK);
+    M5.Display.setCursor(17, 74);
+    M5.Display.print("PREVIEW");
+
+    // Actual 96x96 label art. For missing labels show an explicit fallback.
+    M5.Display.fillRect(12, 94, 96, 96, TFT_BLACK);
+    if (g_preview_done && g_preview_ok && g_preview_pixels) {
+        M5.Display.pushImage(12, 94, 96, 96, g_preview_pixels);
+    } else {
+        M5.Display.setTextColor(gold, TFT_BLACK);
+        M5.Display.setTextSize(2);
+        M5.Display.setCursor(17, 128);
+        if (cursor < 0 || cursor >= g_browser_count)
+            M5.Display.print("NO ROM");
+        else if (g_browser_is_dir[cursor])
+            M5.Display.print("FOLDER");
+        else
+            M5.Display.print(g_preview_done ? "NO LABEL" : "LOADING");
+    }
+    M5.Display.fillRect(12, 192, 96, 17, gold);
+    M5.Display.setTextColor(TFT_BLACK, gold);
+    M5.Display.setTextSize(2);
+    M5.Display.setCursor(17, 192);
+    if (cursor >= 0 && cursor < g_browser_count)
+        M5.Display.printf("%d/%d", cursor + 1, g_browser_count);
+}
+
+static void arcade_service_preview()
+{
+    // Navigation stays responsive: decode once after the highlight settles.
+    if (!g_faces.present.load() || g_emulator_ready || g_select_menu_open ||
+        g_preview_done || g_preview_path.length() == 0 ||
+        (uint32_t)(millis() - g_preview_since_ms) < 160u) return;
+    g_preview_ok = arcade_load_thumbnail(g_preview_path);
+    g_preview_done = true; // An image-less cart is not retried each frame.
+    arcade_browser_info(g_browser_cursor); // Redraw only the sidebar.
+    Serial.printf("RONTO8 R10 label: %s -> %s\n",
+                  g_preview_path.c_str(), g_preview_ok ? "image" : "no label");
+}
+
 static void draw_browser()
 {
-    uint16_t bg_gray = M5.Display.color565(48, 48, 48);
-    
-    // 中央のファイル表示部分をゲーム画面と完全一致 (x=74, y=28)
-    M5.Display.fillRect(74, 28, 192, 192, bg_gray);
-
-    uint16_t r4_yellow = M5.Display.color565(253, 192, 0);
-    M5.Display.fillRect(0, 0, 320, 28, r4_yellow);
-    M5.Display.setTextColor(TFT_BLACK, r4_yellow);
-
-    M5.Display.setCursor(10, 9);
-    M5.Display.setTextSize(2); // フォントサイズを2に戻す
-    M5.Display.println("R8 BROWSER");
-
-    M5.Display.setTextSize(1);
-    M5.Display.setTextColor(TFT_WHITE, bg_gray);
-    M5.Display.setCursor(79, 34); 
-    M5.Display.println(g_browser_path);
-
-    int visible = 9; // 画面内に収まるよう調整
-    int start = 0;
-    if (g_browser_count > visible) {
-        if (g_browser_cursor >= visible) start = g_browser_cursor - visible + 1;
-        if (start + visible > g_browser_count) start = g_browser_count - visible;
+    const uint16_t gold = arcade_gold();
+    const bool faces = g_faces.present.load();
+    if (faces) {
+        M5.Display.fillScreen(gold);
+    } else {
+        // Do not erase the side gutters: they hold the touch controller.
+        M5.Display.fillRect(74, 27, 192, 194, TFT_BLACK);
     }
 
-    M5.Display.setTextSize(2); // フォントサイズを2に戻す
-    int y_pos = 44; // スタート位置を少し下げる
-    for (int i = start; i < start + visible && i < g_browser_count; i++) {
-        M5.Display.setCursor(79, y_pos); 
-        String name = g_browser_name_buf + g_browser_name_offsets[i];
-        if (g_browser_is_dir[i]) {
-            name = "[" + name + "]";
+    if (faces) {
+        // Gamepad3: split file-info / ROM-list design from the approved concept.
+        arcade_title_bar("ROM SELECT");
+        M5.Display.setTextSize(2);
+        M5.Display.setTextColor(TFT_BLACK, gold);
+        M5.Display.setCursor(10, 43);
+        M5.Display.print(arcade_short_name(String("SD:") + g_browser_path, 24));
+        M5.Display.fillRect(8, 62, 304, 2, TFT_BLACK);
+        arcade_browser_info(g_browser_cursor);
+
+        int start = 0;
+        if (g_browser_count > kBrowserRows) {
+            start = g_browser_cursor - (kBrowserRows - 1);
+            if (start < 0) start = 0;
+            const int maxStart = g_browser_count - kBrowserRows;
+            if (start > maxStart) start = maxStart;
         }
-        
-        // はみ出ないように15文字で折り返し防止
-        if (name.length() > 15) {
-            name = name.substring(0, 15);
+        for (int row = 0; row < kBrowserRows; ++row) {
+            const int idx = start + row;
+            const int y = 67 + row * kBrowserRowH;
+            if (idx >= g_browser_count) break;
+
+            const bool selected = idx == g_browser_cursor;
+            if (selected) M5.Display.fillRect(117, y, 195, 23, TFT_BLACK);
+            const uint16_t fg = selected ? gold : TFT_BLACK;
+            const uint16_t fill = selected ? TFT_BLACK : gold;
+            M5.Display.setTextSize(2);
+            M5.Display.setTextColor(fg, fill);
+            M5.Display.setCursor(122, y + 3);
+            M5.Display.print(selected ? ">" : (g_browser_is_dir[idx] ? "+" : " "));
+            M5.Display.setCursor(137, y + 3);
+            const String file = String(g_browser_name_buf + g_browser_name_offsets[idx]);
+            M5.Display.print(arcade_short_name(file, 14));
         }
-        
-        if (i == g_browser_cursor) {
-            M5.Display.setTextColor(TFT_BLACK, TFT_WHITE);
-            while (name.length() < 15) name += " ";
-        } else {
-            M5.Display.setTextColor(TFT_WHITE, bg_gray);
+
+        M5.Display.fillRect(0, 213, 320, 27, TFT_BLACK);
+        M5.Display.setTextColor(gold, TFT_BLACK);
+        M5.Display.setTextSize(2);
+        M5.Display.setCursor(7, 220);
+        M5.Display.print("A:OPEN B:BACK SEL:MENU");
+    } else {
+        // Preserve the touch-button gutters (x<74 and x>266).
+        M5.Display.fillRect(74, 27, 192, 194, gold);
+        M5.Display.fillRect(76, 31, 188, 3, TFT_BLACK);
+        M5.Display.setTextColor(TFT_BLACK, gold);
+        M5.Display.setTextSize(2);
+        M5.Display.setCursor(85, 38);
+        M5.Display.print("ROM SELECT");
+        M5.Display.setCursor(79, 58);
+        M5.Display.print(arcade_short_name(g_browser_path, 15));
+
+        int start = 0;
+        if (g_browser_count > kBrowserRows) {
+            start = g_browser_cursor - kBrowserRows + 1;
+            if (start < 0) start = 0;
+            const int maxStart = g_browser_count - kBrowserRows;
+            if (start > maxStart) start = maxStart;
         }
-        
-        M5.Display.println(name);
-        y_pos += 20; // 行間を20pxに設定（フォントサイズ2でも被らない距離）
+        for (int row = 0; row < kBrowserRows; ++row) {
+            const int idx = start + row;
+            if (idx >= g_browser_count) break;
+            const int y = 83 + row * 22;
+            const bool selected = idx == g_browser_cursor;
+            const uint16_t fg = selected ? gold : TFT_BLACK;
+            const uint16_t fill = selected ? TFT_BLACK : gold;
+            if (selected) M5.Display.fillRect(76, y - 1, 188, 22, TFT_BLACK);
+            M5.Display.setTextColor(fg, fill);
+            M5.Display.setTextSize(2);
+            M5.Display.setCursor(80, y + 2);
+            M5.Display.print(selected ? ">" : " ");
+            M5.Display.print(arcade_short_name(String(g_browser_name_buf + g_browser_name_offsets[idx]), 13));
+        }
     }
     M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
 }
@@ -243,6 +577,7 @@ uint16_t get_imu_input()
 // ---------------------------------------------------------------------------
 void draw_virtual_gamepad()
 {
+    if (g_faces.present.load()) return;
     uint16_t color_dpad = M5.Display.color565(180, 180, 180);
     uint16_t color_btn  = M5.Display.color565(220, 220, 220);
 
@@ -258,10 +593,11 @@ void draw_virtual_gamepad()
     // さらに2ドット右、16ドット下
     int sx = 273, sy = 182;
     M5.Display.drawRoundRect(sx, sy, 45, 20, 4, color_dpad); 
-    M5.Display.setCursor(sx + 8, sy + 6);
+    // Keep the touch fallback readable; 5x 'START' at size 1 was tiny.
+    M5.Display.setCursor(sx + 10, sy + 3);
     M5.Display.setTextColor(color_dpad);
-    M5.Display.setTextSize(1);
-    M5.Display.print("START");
+    M5.Display.setTextSize(2);
+    M5.Display.print("ST");
 
     // --- ボリュームボタン (カーソルの上) ---
     // さらに2px下に移動
@@ -433,7 +769,11 @@ static void audio_task(void *pvParameters)
 
     int current_buf = 0;
     while (1) {
-        render_sounds(audio_buf[current_buf], sample_count);
+        if (g_audio_hold.load()) {
+            memset(audio_buf[current_buf], 0, sample_count * sizeof(int16_t));
+        } else {
+            render_sounds(audio_buf[current_buf], sample_count);
+        }
 
         while (!M5.Speaker.playRaw(audio_buf[current_buf], sample_count, 22050, false, 1, 0)) {
             vTaskDelay(pdMS_TO_TICKS(1));
@@ -464,10 +804,38 @@ void process_volume_controls(uint16_t current_btn) {
     }
 }
 
+// The physical panel is autodetected; the original touch path is preserved.
+static uint16_t poll_controller_input()
+{
+    const bool was_present = g_faces.present.load();
+    g_faces.update();
+    const bool is_present = g_faces.present.load();
+    if (was_present != is_present) {
+        if (is_present) clear_base_leds(); // Switch must be at G25, not the audio G15 position.
+        M5.Display.fillScreen(TFT_BLACK);
+        if (!g_emulator_ready) draw_browser();
+        if (!is_present) draw_virtual_gamepad();
+        Serial.printf("RONTO8 Faces Gamepad3: %s\n", is_present ? "attached" : "detached");
+    }
+    const uint16_t btn = is_present ? g_faces.buttons() : get_touch_state();
+    const bool select_down = is_present && (btn & (1u << 9));
+    if (select_down && !g_select_pressed_prev && !g_select_menu_open)
+        g_select_menu_pending = true;
+    g_select_pressed_prev = select_down;
+    if (g_select_menu_open) return btn; // Physical key state for menu navigation.
+    if (g_swallow_until_release) {
+        if (btn == 0) g_swallow_until_release = false;
+        return 0; // Do not leak A/B/SELECT that closed the menu into the game.
+    }
+    // UI is no longer repainted by key state. The ROM selection highlight
+    // updates via draw_browser(), and no debug labels compete with the title.
+    return btn;
+}
+
 extern "C" void m5stack_update_input()
 {
     M5.update();
-    uint16_t current_btn = get_touch_state();
+    uint16_t current_btn = poll_controller_input();
     
     process_volume_controls(current_btn);
 
@@ -490,7 +858,8 @@ extern "C" void m5stack_update_input()
     }
     
     extern uint16_t m_buttons[8];
-    m_buttons[0] = current_btn;
+    m_buttons[0] = (g_select_menu_open || g_select_menu_pending)
+        ? 0 : (current_btn & ~(1u << 9));
 }
 
 extern "C" void m5stack_suspend_frame_buf(void) {}
@@ -510,21 +879,36 @@ extern "C" void p8_render()
     
     xSemaphoreTake(doneSem, portMAX_DELAY);
     M5.update(); // SAFE ZONE for I2C
-    
-    for (int y = 0; y < 192; y++) {
-        for (int x = 0; x < 192; x++) {
+    const bool full = g_faces.present.load();
+    const int dst_w = full ? kPhysicalWidth : kTouchGameSize;
+    const int dst_h = full ? kPhysicalHeight : kTouchGameSize;
+    static uint8_t map192[kTouchGameSize];
+    static uint8_t map320[kPhysicalWidth];
+    static uint8_t map240[kPhysicalHeight];
+    static bool maps_ready = false;
+    if (!maps_ready) {
+        for (int i = 0; i < kTouchGameSize; ++i) map192[i] = (i * 128) / kTouchGameSize;
+        for (int i = 0; i < kPhysicalWidth; ++i) map320[i] = (i * 128) / kPhysicalWidth;
+        for (int i = 0; i < kPhysicalHeight; ++i) map240[i] = (i * 128) / kPhysicalHeight;
+        maps_ready = true;
+    }
+    const uint8_t* xmap = full ? map320 : map192;
+    const uint8_t* ymap = full ? map240 : map192;
+    for (int y = 0; y < dst_h; y++) {
+        const int src_y = ymap[y];
+        for (int x = 0; x < dst_w; x++) {
             uint8_t c;
-            int src_x = (x * 128) / 192;
-            int src_y = (y * 128) / 192;
+            const int src_x = xmap[x];
             if (src_x % 2 == 0) {
                 c = vram[(src_y * 64) + (src_x / 2)] & 0x0F;
             } else {
                 c = (vram[(src_y * 64) + (src_x / 2)] >> 4) & 0x0F;
             }
-            line_buffer[render_idx][y * 192 + x] = m_colors[c];
+            line_buffer[render_idx][y * dst_w + x] = m_colors[c];
         }
     }
     
+    g_frame_physical.store(full);
     xSemaphoreGive(flipSem);
 }
 
@@ -532,52 +916,57 @@ extern "C" void p8_render()
 // Splash screen
 // ---------------------------------------------------------------------------
 
-void show_ronto8_splash() {
-    uint16_t r4_yellow = M5.Display.color565(253, 192, 0);
-    M5.Display.fillScreen(r4_yellow);
-    M5.Display.setTextColor(TFT_BLACK, r4_yellow);
-    
-    // 1. タイトル部分
+void show_ronto8_splash()
+{
+    // Arcade-style title in the native LCD resolution. The banner and wordmark
+    // use only vector primitives so no extra texture asset is needed.
+    const uint16_t gold = arcade_gold();
+    M5.Display.fillScreen(gold);
+    arcade_logo(92, 11, 12);
+    M5.Display.setTextColor(TFT_BLACK, gold);
     M5.Display.setTextSize(4);
-    M5.Display.setCursor(58, 10);
-    M5.Display.print("R8");
-
+    M5.Display.setCursor(82, 99);  // Align RONTO8 below the R8 logo (one glyph left).
+    M5.Display.print("RONTO8");
     M5.Display.setTextSize(2);
-    M5.Display.setCursor(58, 60);
-    M5.Display.print("RONTO8 Core S3");
+    M5.Display.setCursor(34, 137);
+    M5.Display.print("CORE S3 EDITION v");
+    M5.Display.print(kRonto8Version);
+    M5.Display.fillRect(36, 160, 248, 3, TFT_BLACK);
+    M5.Display.setCursor(52, 169);
+    M5.Display.print("PICO-8 GAME SYSTEM");
+    M5.Display.fillRect(8, 213, 304, 2, TFT_BLACK);
+    M5.Display.setCursor(73, 220);
+    M5.Display.print("FEMTO8 / ZEPTO8");
 
-    // 2. 説明文（3行復活）
-    M5.Display.setTextSize(1);
-    M5.Display.setCursor(58, 95);
-    M5.Display.println("RONTO8: A nu wave in the pico8 console.");
-    M5.Display.setCursor(58, 110);
-    M5.Display.println("Powering beyond hardware limitations.");
-    M5.Display.setCursor(58, 125);
-    M5.Display.println("Acceler8 the portable coding.");
-
-    // 3. ライセンス情報を一番下に配置
-    M5.Display.setCursor(58, 220);
-    M5.Display.println("(C)RONTO8. BASED ON FEMTO8 & ZEPTO8.");
-
+    bool prompt_visible = false;
     while (true) {
         M5.update();
+        g_faces.update();
         if (M5.Touch.getCount() > 0) break;
-        
-        // 文字の点滅処理
-        if (millis() % 1000 < 500) M5.Display.setTextColor(TFT_BLACK, r4_yellow);
-        else M5.Display.setTextColor(r4_yellow, r4_yellow);
-        
-        M5.Display.setTextSize(2);
-        M5.Display.setCursor(60, 170); 
-        M5.Display.print("PRESS SCREEN");
-        delay(50);
+        if (g_faces.present.load() &&
+            (g_faces.buttons() & ((1u << 4) | (1u << 6)))) break;
+
+        const bool want_visible = (millis() / 550u) % 2u == 0u;
+        if (prompt_visible != want_visible) {
+            prompt_visible = want_visible;
+            M5.Display.fillRect(30, 188, 260, 23, gold);
+            if (prompt_visible) {
+                M5.Display.fillRect(30, 188, 260, 23, TFT_BLACK);
+                M5.Display.setTextSize(2);
+                M5.Display.setTextColor(gold, TFT_BLACK);
+                M5.Display.setCursor(g_faces.present.load() ? 55 : 72, 191);
+                M5.Display.print(g_faces.present.load() ?
+                                 "PRESS START BUTTON" : "TOUCH TO START");
+            }
+        }
+        delay(30);
     }
-    
-    // 最後に全消去してLoadingを表示
-    M5.Display.fillScreen(r4_yellow);
-    M5.Display.setTextColor(TFT_BLACK, r4_yellow);
-    M5.Display.setCursor(60, 180);
-    M5.Display.print("Loading...          ");
+
+    M5.Display.fillScreen(gold);
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(TFT_BLACK, gold);
+    M5.Display.setCursor(102, 112);
+    M5.Display.print("LOADING...");
 }
 
 // ---------------------------------------------------------------------------
@@ -601,15 +990,14 @@ void load_selected_rom()
 
     // SD.open() uses "/" as root, but fopen() (used by the parser) needs the
     // VFS mount point which is "/sd" by default with SD.begin().
-    static String current_rom_path;
-    current_rom_path = "/sd" + fullpath;
+    g_current_rom_path = "/sd" + fullpath;
 
-    if (p8_init_file_with_param(current_rom_path.c_str(), NULL) == 0) {
+    if (p8_init_file_with_param(g_current_rom_path.c_str(), NULL) == 0) {
         g_emulator_ready = true;
         // Clear the line buffers so the previous game's frame doesn't flash
         extern uint16_t *line_buffer[2];
-        if (line_buffer[0]) memset(line_buffer[0], 0, 192 * 192 * 2);
-        if (line_buffer[1]) memset(line_buffer[1], 0, 192 * 192 * 2);
+        if (line_buffer[0]) memset(line_buffer[0], 0, kBufferPixels * sizeof(uint16_t));
+        if (line_buffer[1]) memset(line_buffer[1], 0, kBufferPixels * sizeof(uint16_t));
     } else {
         g_emulator_init_failed = true;
     }
@@ -622,7 +1010,15 @@ void load_selected_rom()
 void setup()
 {
     auto cfg = M5.config();
+    // Required by the M5Stack official CoreS3 + Faces Gamepad3 example.
+    cfg.fallback_board = m5::board_t::board_M5StackCoreS3;
     M5.begin(cfg);
+    // GPIO5 is the safe CoreS3 lane for Faces Bottom3 LEDs when its switch is G25.
+    // Clear any retained white state even if Gamepad3 has not yet been detected.
+    clear_base_leds();
+    g_faces.begin();
+    Serial.printf("RONTO8 Faces Gamepad3 on I2C 0x08: %s\n",
+                  g_faces.present.load() ? "READY" : "not detected (touch mode)");
     
     Preferences prefs;
     prefs.begin("ronto8", false);
@@ -635,8 +1031,17 @@ void setup()
 
     M5.Display.fillScreen(TFT_BLACK);
 
-    line_buffer[0] = (uint16_t*)heap_caps_malloc(192 * 192 * 2, MALLOC_CAP_SPIRAM);
-    line_buffer[1] = (uint16_t*)heap_caps_malloc(192 * 192 * 2, MALLOC_CAP_SPIRAM);
+    line_buffer[0] = (uint16_t*)heap_caps_malloc(kBufferPixels * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    line_buffer[1] = (uint16_t*)heap_caps_malloc(kBufferPixels * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!line_buffer[0] || !line_buffer[1]) {
+        M5.Display.fillScreen(TFT_BLACK);
+        M5.Display.setTextColor(TFT_RED, TFT_BLACK);
+        M5.Display.setTextSize(2);
+        M5.Display.setCursor(12, 68);
+        M5.Display.println("VIDEO BUFFER ERROR");
+        Serial.println("ERROR: cannot allocate PSRAM RGB565 buffers");
+        for (;;) delay(1000);
+    }
     
     flipSem = xSemaphoreCreateBinary();
     doneSem = xSemaphoreCreateBinary();
@@ -670,10 +1075,193 @@ void setup()
     draw_virtual_gamepad(); // コントローラーの描画は最初の一回だけ
 }
 
+
+/* Gamepad3 SELECT menu (physical buttons):
+ * SELECT opens/closes, UP/DOWN choose, LEFT/RIGHT adjust selected volume,
+ * A/START activates, B cancels. It is also available in the ROM browser,
+ * where the restart entry is intentionally omitted.
+ */
+// Menu order during play: CONTINUE -> RESET GAME -> RESET CORE -> VOLUME.
+// The ROM browser has no active game, so only RESET GAME is hidden.
+static int select_menu_count() { return g_emulator_ready ? 4 : 3; }
+static int select_game_reset_row() { return g_emulator_ready ? 1 : -1; }
+static int select_core_reset_row() { return g_emulator_ready ? 2 : 1; }
+static int select_volume_row() { return g_emulator_ready ? 3 : 2; }
+
+static void persist_menu_volume()
+{
+    if (!g_menu_volume_dirty) return;
+    Preferences prefs;
+    if (prefs.begin("ronto8", false)) {
+        prefs.putInt("volume", g_volume);
+        prefs.end();
+    }
+    g_menu_volume_dirty = false;
+}
+
+static void draw_select_menu()
+{
+    const uint16_t gold = arcade_gold();
+    M5.Display.fillScreen(gold);
+    arcade_title_bar(g_emulator_ready ? "GAME MENU" : "SYSTEM MENU");
+
+    const int rows = select_menu_count();
+    for (int i = 0; i < rows; ++i) {
+        const int y = 44 + i * 40;
+        const bool chosen = (i == g_menu_selected);
+        const uint16_t bg = chosen ? TFT_BLACK : gold;
+        const uint16_t fg = chosen ? gold : TFT_BLACK;
+        M5.Display.fillRoundRect(12, y, 296, 35, 4, bg);
+        M5.Display.drawRoundRect(12, y, 296, 35, 4, TFT_BLACK);
+        M5.Display.setTextColor(fg, bg);
+        M5.Display.setTextSize(2);
+        M5.Display.setCursor(22, y + 9);
+        if (i == 0) M5.Display.print("CONTINUE");
+        else if (i == select_game_reset_row()) M5.Display.print("RESET GAME");
+        else if (i == select_core_reset_row()) M5.Display.print("RESET CORE");
+        else if (i == select_volume_row()) {
+            M5.Display.printf("VOLUME %3d%%", (g_volume * 100 + 127) / 255);
+            // Ten-bar hardware-style volume meter; always clear at each redraw.
+            const int lit = (g_volume * 10 + 127) / 255;
+            for (int bar = 0; bar < 10; ++bar) {
+                const uint16_t barcolor = bar < lit ? fg :
+                     (chosen ? M5.Display.color565(80, 80, 80)
+                             : M5.Display.color565(245, 226, 156));
+                M5.Display.fillRect(206 + bar * 9, y + 12, 7, 13, barcolor);
+            }
+        }
+    }
+    M5.Display.fillRect(8, 205, 304, 3, TFT_BLACK);
+    M5.Display.fillRect(0, 212, 320, 28, TFT_BLACK);
+    M5.Display.setTextColor(gold, TFT_BLACK);
+    M5.Display.setTextSize(2);
+    M5.Display.setCursor(8, 219);
+    M5.Display.print(g_menu_selected == select_volume_row()
+        ? "LEFT/RIGHT:VOL B:BACK" : "A:OK B:BACK SEL:CLOSE");
+}
+
+static void begin_select_menu()
+{
+    g_select_menu_pending = false;
+    g_select_menu_open = true;
+    g_menu_selected = 0;
+    g_menu_volume_dirty = false;
+    g_menu_prev_btn = (1u << 9); // Opening SELECT must be released before toggling.
+    g_audio_hold.store(true);
+    // SELECT is seen in p8_post_flip, after p8_render queued a DMA frame.
+    // Wait for that last game's frame before drawing the menu.
+    if (doneSem) {
+        xSemaphoreTake(doneSem, portMAX_DELAY);
+        M5.Display.waitDMA();
+        xSemaphoreGive(doneSem);
+    }
+    draw_select_menu();
+}
+
+static void close_select_menu()
+{
+    persist_menu_volume();
+    g_select_menu_open = false;
+    g_select_menu_pending = false;
+    g_swallow_until_release = true;
+    g_audio_hold.store(false);
+    if (!g_emulator_ready) {
+        draw_browser();
+        draw_virtual_gamepad();
+    } else {
+        // Game framebuffer is redrawn on the next p8_step/p8_flip.
+        M5.Display.fillScreen(TFT_BLACK);
+    }
+    m_start_time = 0; // Avoid a large game-time delta from the paused menu.
+}
+
+static void adjust_select_volume(int delta)
+{
+    const int next = constrain(g_volume + delta, 0, 255);
+    if (next == g_volume) return;
+    g_volume = next;
+    g_menu_volume_dirty = true;
+    M5.Speaker.setVolume(g_volume);
+    draw_select_menu();
+}
+
+static void update_select_menu()
+{
+    M5.update();
+    const uint16_t btn = poll_controller_input();
+    const uint16_t pressed = btn & ~g_menu_prev_btn;
+    g_menu_prev_btn = btn;
+
+    if (pressed & ((1u << 5) | (1u << 9))) { // B or SELECT
+        close_select_menu();
+        return;
+    }
+    if (pressed & (1u << 2)) { // UP
+        g_menu_selected = (g_menu_selected + select_menu_count() - 1) % select_menu_count();
+        draw_select_menu();
+    } else if (pressed & (1u << 3)) { // DOWN
+        g_menu_selected = (g_menu_selected + 1) % select_menu_count();
+        draw_select_menu();
+    }
+    if (g_menu_selected == select_volume_row()) {
+        if (pressed & (1u << 0)) adjust_select_volume(-16);
+        if (pressed & (1u << 1)) adjust_select_volume(+16);
+    }
+    if (pressed & ((1u << 4) | (1u << 6))) { // A or START
+        if (g_menu_selected == 0) {
+            close_select_menu();
+        } else if (g_menu_selected == select_volume_row()) {
+            // A on volume increases it; LEFT/RIGHT also work.
+            adjust_select_volume(+16);
+        } else if (g_menu_selected == select_core_reset_row()) {
+            // Explicit user selection: reboot only the CoreS3 MCU.
+            // Save pending volume preference; do not format or erase storage.
+            persist_menu_volume();
+            g_audio_hold.store(true);
+            M5.Display.fillScreen(TFT_BLACK);
+            M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+            M5.Display.setTextSize(2);
+            M5.Display.setCursor(43, 104);
+            M5.Display.println("RESTARTING CORE...");
+            M5.Display.waitDMA();
+            delay(100);
+            ESP.restart();
+            return; // ESP.restart does not normally return.
+        } else if (g_menu_selected == select_game_reset_row() &&
+                   g_emulator_ready && g_current_rom_path.length() != 0) {
+            // p8_restart() longjmps through a returned stack frame on this
+            // CoreS3 build. Use a fresh cartridge/Lua reload instead.
+            M5.Display.fillScreen(TFT_BLACK);
+            M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+            M5.Display.setTextSize(2);
+            M5.Display.setCursor(65, 100);
+            M5.Display.println("RESTARTING...");
+            delay(25); // Allow audio worker to observe g_audio_hold before reloading.
+            const int result = p8_reload_file_with_param(g_current_rom_path.c_str(), NULL);
+            g_emulator_init_failed = (result != 0);
+            if (result == 0) {
+                if (line_buffer[0]) memset(line_buffer[0], 0, kBufferPixels * sizeof(uint16_t));
+                if (line_buffer[1]) memset(line_buffer[1], 0, kBufferPixels * sizeof(uint16_t));
+            }
+            close_select_menu();
+        }
+    }
+    // The menu does not need the full game loop's frame rate.
+    delay(8);
+}
+
 void process_volume_controls(uint16_t current_btn);
 
 void loop()
 {
+    if (g_select_menu_open) {
+        update_select_menu();
+        return;
+    }
+    if (g_select_menu_pending) {
+        begin_select_menu();
+        return;
+    }
     if (g_emulator_init_failed) {
         static bool shown = false;
         if (!shown) {
@@ -688,9 +1276,12 @@ void loop()
 
     if (!g_emulator_ready) {
         M5.update();
-        uint16_t touch_btn = get_touch_state();
-        uint16_t current_btn = touch_btn;
-        
+        uint16_t current_btn = poll_controller_input();
+        if (g_select_menu_pending) {
+            begin_select_menu();
+            return;
+        }
+
         process_volume_controls(current_btn);
 
         // ROM browser: debounce with edge detection + repeat (long-press)
@@ -724,14 +1315,14 @@ void loop()
         }
         if (pressed & (1 << 1)) { // RIGHT (Page Down)
             if (g_browser_cursor < g_browser_count - 1) {
-                g_browser_cursor += 9;
+                g_browser_cursor += kBrowserRows;
                 if (g_browser_cursor >= g_browser_count) g_browser_cursor = g_browser_count - 1;
                 cursor_moved = true;
             }
         }
         if (pressed & (1 << 0)) { // LEFT (Page Up)
             if (g_browser_cursor > 0) {
-                g_browser_cursor -= 9;
+                g_browser_cursor -= kBrowserRows;
                 if (g_browser_cursor < 0) g_browser_cursor = 0;
                 cursor_moved = true;
             }
@@ -768,6 +1359,7 @@ void loop()
                 load_selected_rom();
             }
         }
+        arcade_service_preview();
 
     } else if (g_emulator_ready && !g_audio_task_started) {
         g_audio_task_started = true;
@@ -775,6 +1367,8 @@ void loop()
         M5.Display.fillScreen(TFT_BLACK);
         draw_virtual_gamepad();
     } else {
-        // Game running
+        // Game running. SELECT is observed by m5stack_update_input()
+        // during p8_step(); present the menu after stepping returns.
         p8_step();
+        if (g_select_menu_pending) begin_select_menu();
     }}
