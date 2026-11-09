@@ -824,8 +824,12 @@ void setup()
  * A/START activates, B cancels. It is also available in the ROM browser,
  * where the restart entry is intentionally omitted.
  */
-static int select_menu_count() { return g_emulator_ready ? 3 : 2; }
-static int select_volume_row() { return g_emulator_ready ? 2 : 1; }
+// Menu order during play: CONTINUE -> RESET GAME -> RESET CORE -> VOLUME.
+// The ROM browser has no active game, so only RESET GAME is hidden.
+static int select_menu_count() { return g_emulator_ready ? 4 : 3; }
+static int select_game_reset_row() { return g_emulator_ready ? 1 : -1; }
+static int select_core_reset_row() { return g_emulator_ready ? 2 : 1; }
+static int select_volume_row() { return g_emulator_ready ? 3 : 2; }
 
 static void persist_menu_volume()
 {
@@ -849,22 +853,24 @@ static void draw_select_menu()
     M5.Display.setCursor(18, 10);
     M5.Display.print("RONTO8 SETTINGS");
     M5.Display.setCursor(276, 10);
-    M5.Display.print("R7");
+    M5.Display.print("R8");
 
     const int rows = select_menu_count();
     for (int i = 0; i < rows; ++i) {
-        const int y = 49 + i * 51;
+        // Compact but readable rows: all four game-menu items fit above footer.
+        const int y = 43 + i * 40;
         const bool chosen = i == g_menu_selected;
         const uint16_t bg = chosen ? yellow : dark;
-        M5.Display.fillRoundRect(12, y, 296, 42, 7, bg);
+        M5.Display.fillRoundRect(12, y, 296, 35, 7, bg);
         M5.Display.setTextColor(chosen ? TFT_BLACK : TFT_WHITE, bg);
         M5.Display.setTextSize(2);
-        M5.Display.setCursor(22, y + 12);
-        const int volrow = select_volume_row();
+        M5.Display.setCursor(22, y + 9);
         if (i == 0) M5.Display.print("CONTINUE");
-        else if (i == volrow) {
+        else if (i == select_game_reset_row()) M5.Display.print("RESET GAME");
+        else if (i == select_core_reset_row()) M5.Display.print("RESET CORE");
+        else if (i == select_volume_row()) {
             M5.Display.printf("VOLUME    %3d%%", (g_volume * 100 + 127) / 255);
-        } else M5.Display.print("RESET GAME");
+        }
     }
     M5.Display.fillRect(0, 211, 320, 29, TFT_BLACK);
     M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -947,7 +953,22 @@ static void update_select_menu()
         } else if (g_menu_selected == select_volume_row()) {
             // A on volume increases it; LEFT/RIGHT also work.
             adjust_select_volume(+16);
-        } else if (g_emulator_ready && g_current_rom_path.length() != 0) {
+        } else if (g_menu_selected == select_core_reset_row()) {
+            // Explicit user selection: reboot only the CoreS3 MCU.
+            // Save pending volume preference; do not format or erase storage.
+            persist_menu_volume();
+            g_audio_hold.store(true);
+            M5.Display.fillScreen(TFT_BLACK);
+            M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+            M5.Display.setTextSize(2);
+            M5.Display.setCursor(43, 104);
+            M5.Display.println("RESTARTING CORE...");
+            M5.Display.waitDMA();
+            delay(100);
+            ESP.restart();
+            return; // ESP.restart does not normally return.
+        } else if (g_menu_selected == select_game_reset_row() &&
+                   g_emulator_ready && g_current_rom_path.length() != 0) {
             // p8_restart() longjmps through a returned stack frame on this
             // CoreS3 build. Use a fresh cartridge/Lua reload instead.
             M5.Display.fillScreen(TFT_BLACK);
