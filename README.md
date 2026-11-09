@@ -33,6 +33,23 @@ RONTO8は、[**M5Stack CoreS3**](https://docs.m5stack.com/ja/core/CoreS3) 専用
   - **Start / Pause**: Bottom center (画面下部中央)
   - **Volume**: Left edge volume buttons (画面左端のボリュームボタン)
 
+## 🎮 Faces Gamepad3 (development branch) / 物理ゲームパッド対応（開発版）
+
+M5Stack **CoreS3 + Faces Bottom3 (A168) + Faces Gamepad3 (A004-V3)** are supported by the development branch.
+Gamepad3 is detected automatically through the M5-Bus I2C connection (SDA=GPIO12, SCL=GPIO11, IRQ=GPIO10, I2C address 0x08, Gamepad model ID 0x03).
+The driver reads the controls without rewriting the Gamepad3 firmware or configuration.
+
+- **Detected:** physical gamepad mode; PICO-8's square screen fills the LCD height at 240×240, with 40-pixel sidebars to avoid stretching.
+- **Not detected:** original on-screen touch gamepad with its original 192×192 image.
+- **Keys:** D-pad = movement / ROM browser; A = O / confirm; B = X / back; START = pause / confirm; SELECT+UP/DOWN = volume.
+- The gamepad can be connected before startup. Later connection or removal is rechecked periodically.
+- The SD ROM browser also uses the available display width when the physical gamepad is detected.
+
+CoreS3 + Faces Bottom3 + Gamepad3 の組み合わせを開発ブランチで自動検出します。接続時は仮想ボタンを消し、PICO-8の縦横比を維持して 240×240 に拡大表示します。接続していない場合は従来どおりタッチ式操作です。
+
+**Status / 状態:** Source implementation only; hardware verification and firmware build are pending. Existing M5Burner releases are unchanged.
+**開発版はソース実装済みですが、実機・ビルドはまだ未確認です。従来のM5Burner公開版は変更していません。**
+
 ## ⚙️ Installation / インストール
 
 ### Via [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/intro) (Recommended)
