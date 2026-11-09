@@ -1,4 +1,4 @@
-# RONTO8 for M5Stack CoreS3 (v0.61)
+# RONTO8 for M5Stack CoreS3 (v1.01)
 
 ![RONTO8 - Touhou](toho.gif)
 
@@ -51,9 +51,11 @@ Joypad-compatible build: Install with the **M5Burner share code** shown in the i
 ### Via [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/intro) (Recommended)
 You can easily install RONTO8 using [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/intro) with the following share code:
 - **Share Code**: `GrIwixNA9Pp2xbYM`
+- **WebBurner (v1.01)**: https://burner.m5stack.com/WG2JKB
 
 [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/intro)のシェアコード検索から簡単にインストールできます：
 - **シェアコード**: `GrIwixNA9Pp2xbYM`
+- **WebBurner（v1.01）**: https://burner.m5stack.com/WG2JKB
 
 ### Building from Source / ソースからビルドする場合
 
