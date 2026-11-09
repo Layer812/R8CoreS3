@@ -5,6 +5,7 @@
  */
 #include <M5Unified.h>
 #include <Adafruit_NeoPixel.h>
+#include <pngle.h>  // Already used by the existing PICO-8 cartridge parser.
 #include "faces_gamepad3.hpp"
 
 static ronto_faces3::Device g_faces;
@@ -232,38 +233,213 @@ static String arcade_short_name(const String& name, size_t max_chars)
     return name.substring(0, max_chars - 2) + "..";
 }
 
+// ---------------------------------------------------------------------------
+// R10 actual ROM thumbnails, read-only. PICO-8 .p8.png carts contain a visible
+// 128x128 label at pixels (16..143, 24..151) of their 160x205 PNG image.
+// .p8 text carts can optionally include the __label__ section. Both paths
+// use the existing PNG decoder/SD VFS without starting Lua or modifying ROMs.
+// ---------------------------------------------------------------------------
+static constexpr int kPreviewSide = 96;
+static uint16_t* g_preview_pixels = nullptr; // Allocated once in PSRAM.
+static String g_preview_path;
+static uint32_t g_preview_since_ms = 0;
+static bool g_preview_done = false;
+static bool g_preview_ok = false;
+
+static bool arcade_preview_buffer()
+{
+    if (g_preview_pixels) return true;
+    g_preview_pixels = (uint16_t*)heap_caps_malloc(
+        kPreviewSide * kPreviewSide * sizeof(uint16_t),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!g_preview_pixels) {
+        g_preview_pixels = (uint16_t*)heap_caps_malloc(
+            kPreviewSide * kPreviewSide * sizeof(uint16_t), MALLOC_CAP_8BIT);
+    }
+    return g_preview_pixels != nullptr;
+}
+
+struct ArcadePreviewDecode {
+    uint16_t* pixels;
+    uint32_t pixel_count;
+};
+
+static void arcade_png_pixel(pngle_t* png, unsigned int x, unsigned int y,
+                             unsigned int, unsigned int,
+                             const unsigned char rgba[4])
+{
+    auto* data = static_cast<ArcadePreviewDecode*>(pngle_get_user_data(png));
+    if (!data || !data->pixels || x < 16 || x >= 144 || y < 24 || y >= 152)
+        return;
+
+    // Nearest-neighbor 128 -> 96. The callback's 32k pixels never touch LCD.
+    const int dx = (int)((x - 16) * kPreviewSide / 128);
+    const int dy = (int)((y - 24) * kPreviewSide / 128);
+    const uint16_t rgb = rgba[3] < 128 ? 0 :
+        (uint16_t)(((uint16_t)(rgba[0] & 0xF8) << 8) |
+                   ((uint16_t)(rgba[1] & 0xFC) << 3) |
+                   ((uint16_t)(rgba[2] & 0xF8) >> 3));
+    data->pixels[dy * kPreviewSide + dx] = rgb;
+    ++data->pixel_count;
+}
+
+static bool arcade_load_png_thumbnail(FILE* file)
+{
+    static constexpr uint8_t signature[8] = {137, 80, 78, 71, 13, 10, 26, 10};
+    uint8_t header[8] = {0};
+    if (fread(header, 1, 8, file) != 8 ||
+        memcmp(header, signature, sizeof(signature)) != 0 ||
+        fseek(file, 0, SEEK_SET) != 0) return false;
+
+    pngle_t* png = pngle_new();
+    if (!png) return false;
+    ArcadePreviewDecode decode{g_preview_pixels, 0};
+    pngle_set_user_data(png, &decode);
+    pngle_set_draw_callback(png, arcade_png_pixel);
+
+    bool ok = true;
+    size_t total = 0;
+    uint8_t chunk[1024];
+    while (true) {
+        const size_t n = fread(chunk, 1, sizeof(chunk), file);
+        if (!n) {
+            if (ferror(file)) ok = false;
+            break;
+        }
+        total += n;
+        if (total > 2 * 1024 * 1024 || pngle_feed(png, chunk, n) < 0) {
+            ok = false;
+            break;
+        }
+    }
+    ok = ok && pngle_get_width(png) == 160 &&
+         pngle_get_height(png) == 205 && decode.pixel_count >= 16384;
+    pngle_destroy(png);
+    return ok;
+}
+
+static bool arcade_load_p8_thumbnail(FILE* file)
+{
+    // Existing p8_parser.c palette (32 colors), preconverted to RGB565.
+    static constexpr uint16_t palette[32] = {
+        0x0000,0x194a,0x792a,0x042a,0xaa86,0x5aa9,0xc618,0xff9d,
+        0xf809,0xfd00,0xff64,0x0726,0x2d7f,0x83b3,0xfbb5,0xfe75,
+        0x28c2,0x10e6,0x4106,0x128b,0x7165,0x4987,0xa44f,0xf76f,
+        0xb88a,0xfb64,0xaf25,0x05a9,0x02d6,0x722c,0xfb6b,0xfcf0
+    };
+    static const char* symbols = "0123456789abcdefghijklmnopqrstuv";
+    char line[192];
+    bool in_label = false;
+    unsigned src_row = 0;
+    size_t read_budget = 0;
+
+    // The 1 MB byte budget avoids spending seconds scanning unusually long
+    // Lua data, while supporting ordinary text-cart __label__ sections.
+    while (fgets(line, sizeof(line), file)) {
+        read_budget += strlen(line);
+        if (read_budget > 1024 * 1024) break;
+        if (!in_label) {
+            if (strncmp(line, "__label__", 9) == 0) in_label = true;
+            continue;
+        }
+        if (strncmp(line, "__", 2) == 0) break;
+        const size_t len = strcspn(line, "\r\n");
+        if (len < 128) continue;
+        if (src_row >= 128) break;
+        for (int dy = 0; dy < kPreviewSide; ++dy) {
+            if ((unsigned)(dy * 128 / kPreviewSide) != src_row) continue;
+            uint16_t* out = g_preview_pixels + dy * kPreviewSide;
+            for (int dx = 0; dx < kPreviewSide; ++dx) {
+                const char symbol = line[dx * 128 / kPreviewSide];
+                const char* found = strchr(symbols, symbol);
+                out[dx] = found ? palette[found - symbols] : 0;
+            }
+        }
+        ++src_row;
+    }
+    return in_label && src_row == 128;
+}
+
+static bool arcade_load_thumbnail(const String& path)
+{
+    if (!arcade_preview_buffer()) return false;
+    memset(g_preview_pixels, 0, kPreviewSide * kPreviewSide * sizeof(uint16_t));
+
+    String extension = path;
+    extension.toLowerCase();
+    const bool png_cart = extension.endsWith(".png");
+    const bool text_cart = extension.endsWith(".p8");
+    if (!png_cart && !text_cart) return false;
+
+    // Same VFS path used by load_selected_rom(). Read-only, never write SD.
+    const String full_path = String("/sd") + path;
+    FILE* file = fopen(full_path.c_str(), "rb");
+    if (!file) return false;
+    const bool ok = png_cart ? arcade_load_png_thumbnail(file) :
+                               arcade_load_p8_thumbnail(file);
+    fclose(file);
+    return ok;
+}
+
+static void arcade_request_preview(int cursor)
+{
+    String selected;
+    if (cursor >= 0 && cursor < g_browser_count && !g_browser_is_dir[cursor])
+        selected = g_browser_path +
+                   String(g_browser_name_buf + g_browser_name_offsets[cursor]);
+    if (selected == g_preview_path) return;
+    g_preview_path = selected;
+    g_preview_since_ms = millis();
+    g_preview_done = false;
+    g_preview_ok = false;
+}
+
 static void arcade_browser_info(int cursor)
 {
     const uint16_t gold = arcade_gold();
-    M5.Display.fillRect(8, 67, 103, 133, gold);
-    M5.Display.drawRect(8, 67, 103, 133, TFT_BLACK);
-    M5.Display.fillRect(13, 72, 93, 23, TFT_BLACK);
+    arcade_request_preview(cursor);
+    M5.Display.fillRect(8, 67, 103, 143, gold);
+    M5.Display.drawRect(8, 67, 103, 143, TFT_BLACK);
+    M5.Display.fillRect(12, 71, 95, 21, TFT_BLACK);
     M5.Display.setTextSize(2);
     M5.Display.setTextColor(gold, TFT_BLACK);
-    M5.Display.setCursor(20, 76);
-    M5.Display.print("SELECT");
+    M5.Display.setCursor(17, 74);
+    M5.Display.print("PREVIEW");
+
+    // Actual 96x96 label art. For missing labels show an explicit fallback.
+    M5.Display.fillRect(12, 94, 96, 96, TFT_BLACK);
+    if (g_preview_done && g_preview_ok && g_preview_pixels) {
+        M5.Display.pushImage(12, 94, 96, 96, g_preview_pixels);
+    } else {
+        M5.Display.setTextColor(gold, TFT_BLACK);
+        M5.Display.setTextSize(2);
+        M5.Display.setCursor(17, 128);
+        if (cursor < 0 || cursor >= g_browser_count)
+            M5.Display.print("NO ROM");
+        else if (g_browser_is_dir[cursor])
+            M5.Display.print("FOLDER");
+        else
+            M5.Display.print(g_preview_done ? "NO LABEL" : "LOADING");
+    }
+    M5.Display.fillRect(12, 192, 96, 17, gold);
     M5.Display.setTextColor(TFT_BLACK, gold);
-    if (g_browser_count <= 0 || cursor < 0 || cursor >= g_browser_count) {
-        M5.Display.setCursor(17, 116);
-        M5.Display.print("NO ROMS");
-        return;
-    }
-    // This is file information, NOT a fabricated game screenshot.
-    const String name = String(g_browser_name_buf + g_browser_name_offsets[cursor]);
     M5.Display.setTextSize(2);
-    // Long names continue across up to three lines, never shrinking the font.
-    for (int line = 0; line < 3; ++line) {
-        const int index = line * 7;
-        if (index >= (int)name.length()) break;
-        String chunk = name.substring(index, index + 7);
-        if (line == 2 && name.length() > 21)
-            chunk = name.substring(14, 19) + "..";
-        M5.Display.setCursor(17, 110 + line * 22);
-        M5.Display.print(chunk);
-    }
-    M5.Display.fillRect(14, 174, 91, 2, TFT_BLACK);
-    M5.Display.setCursor(18, 181);
-    M5.Display.printf("%d/%d", cursor + 1, g_browser_count);
+    M5.Display.setCursor(17, 192);
+    if (cursor >= 0 && cursor < g_browser_count)
+        M5.Display.printf("%d/%d", cursor + 1, g_browser_count);
+}
+
+static void arcade_service_preview()
+{
+    // Navigation stays responsive: decode once after the highlight settles.
+    if (!g_faces.present.load() || g_emulator_ready || g_select_menu_open ||
+        g_preview_done || g_preview_path.length() == 0 ||
+        (uint32_t)(millis() - g_preview_since_ms) < 160u) return;
+    g_preview_ok = arcade_load_thumbnail(g_preview_path);
+    g_preview_done = true; // An image-less cart is not retried each frame.
+    arcade_browser_info(g_browser_cursor); // Redraw only the sidebar.
+    Serial.printf("RONTO8 R10 label: %s -> %s\n",
+                  g_preview_path.c_str(), g_preview_ok ? "image" : "no label");
 }
 
 static void draw_browser()
@@ -1196,6 +1372,7 @@ void loop()
                 load_selected_rom();
             }
         }
+        arcade_service_preview();
 
     } else if (g_emulator_ready && !g_audio_task_started) {
         g_audio_task_started = true;
