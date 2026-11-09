@@ -180,66 +180,166 @@ static void scan_browser_directory(const String& path)
     dir.close();
 }
 
+// ---------------------------------------------------------------------------
+// RONTO8 arcade visual identity: 1990s-style yellow/black throughout the UI.
+// Native 320x240 primitives: no external fonts, bitmaps, heap use, or SD reads.
+// ---------------------------------------------------------------------------
+static constexpr uint32_t kArcadeGoldRGB = 0xFFC400u;
+static constexpr int kBrowserRows = 6;
+static constexpr int kBrowserRowH = 24;
+
+static uint16_t arcade_gold() { return M5.Display.color565(255, 196, 0); }
+
+// Large blocky original R8 wordmark. 5x7 pixels per glyph at adjustable scale.
+// Created as geometry rather than bundling artwork or requiring extra assets.
+static void arcade_logo(int x, int y, int scale)
+{
+    static const uint8_t letters[2][7] = {
+        { 0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11 }, // R
+        { 0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E }  // 8
+    };
+    for (int letter = 0; letter != 2; ++letter) {
+        for (int cy = 0; cy != 7; ++cy) {
+            for (int cx = 0; cx != 5; ++cx) {
+                if (letters[letter][cy] & (0x10 >> cx)) {
+                    M5.Display.fillRect(x + (letter * 6 + cx) * scale,
+                                        y + cy * scale, scale, scale, TFT_BLACK);
+                }
+            }
+        }
+    }
+}
+
+static void arcade_title_bar(const char* heading, const char* status)
+{
+    const uint16_t gold = arcade_gold();
+    M5.Display.fillRect(0, 0, 320, 34, gold);
+    arcade_logo(8, 5, 3);
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(TFT_BLACK, gold);
+    M5.Display.setCursor(58, 9);
+    M5.Display.print(heading);
+    if (status && *status) {
+        M5.Display.setCursor(211, 9);
+        M5.Display.print(status);
+    }
+    M5.Display.fillRect(8, 33, 304, 3, TFT_BLACK);
+}
+
+static String arcade_short_name(const String& name, size_t max_chars)
+{
+    if (name.length() <= max_chars) return name;
+    if (max_chars < 5) return name.substring(0, max_chars);
+    return name.substring(0, max_chars - 2) + "..";
+}
+
+static void arcade_browser_info(int cursor)
+{
+    const uint16_t gold = arcade_gold();
+    M5.Display.fillRect(8, 67, 103, 133, gold);
+    M5.Display.drawRect(8, 67, 103, 133, TFT_BLACK);
+    M5.Display.fillRect(13, 72, 93, 23, TFT_BLACK);
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(gold, TFT_BLACK);
+    M5.Display.setCursor(20, 76);
+    M5.Display.print("SELECT");
+    M5.Display.setTextColor(TFT_BLACK, gold);
+    if (g_browser_count <= 0 || cursor < 0 || cursor >= g_browser_count) {
+        M5.Display.setCursor(17, 116);
+        M5.Display.print("NO ROMS");
+        return;
+    }
+    // This is file information, NOT a fabricated game screenshot.
+    const String name = String(g_browser_name_buf + g_browser_name_offsets[cursor]);
+    const bool dir = g_browser_is_dir[cursor];
+    M5.Display.setCursor(20, 107);
+    M5.Display.print(dir ? "DIR" : "PICO-8");
+    M5.Display.setCursor(20, 134);
+    M5.Display.print(dir ? "FOLDER" : "CART");
+    M5.Display.fillRect(14, 162, 91, 2, TFT_BLACK);
+    M5.Display.setCursor(18, 174);
+    M5.Display.printf("%d/%d", cursor + 1, g_browser_count);
+}
+
 static void draw_browser()
 {
-    uint16_t bg_gray = M5.Display.color565(48, 48, 48);
-    
+    const uint16_t gold = arcade_gold();
     const bool faces = g_faces.present.load();
-    if (faces) M5.Display.fillScreen(bg_gray);
-    else M5.Display.fillRect(74, 28, 192, 192, bg_gray);
+    const uint16_t bg = faces ? gold : TFT_BLACK;
+    M5.Display.fillScreen(bg);
 
-    uint16_t r4_yellow = M5.Display.color565(253, 192, 0);
-    M5.Display.fillRect(0, 0, 320, 28, r4_yellow);
-    M5.Display.setTextColor(TFT_BLACK, r4_yellow);
-
-    M5.Display.setCursor(10, 9);
-    M5.Display.setTextSize(2); // フォントサイズを2に戻す
-    M5.Display.println("R8 BROWSER");
-    // R4 is an always-visible version indicator, with a large connection status.
-    M5.Display.setCursor(210, 9);
-    M5.Display.print(faces ? g_faces.keyLabel() : "R6 TOUCH");
-
-    M5.Display.setTextSize(faces ? 2 : 1);
-    M5.Display.setTextColor(TFT_WHITE, bg_gray);
-    M5.Display.setCursor(faces ? 8 : 79, 34); 
-    M5.Display.println(g_browser_path);
-    // Integrated visibility of the I2C result; not a separate diagnostic app.
-    if (!faces) {
+    if (faces) {
+        // Gamepad3: split file-info / ROM-list design from the approved concept.
+        arcade_title_bar("ROM SELECT", "R9 PAD");
         M5.Display.setTextSize(2);
-        M5.Display.setCursor(80, 219);
-        M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
-        M5.Display.print(g_faces.label());
-    }
+        M5.Display.setTextColor(TFT_BLACK, gold);
+        M5.Display.setCursor(10, 43);
+        M5.Display.print(arcade_short_name(String("SD:") + g_browser_path, 24));
+        M5.Display.fillRect(8, 62, 304, 2, TFT_BLACK);
+        arcade_browser_info(g_browser_cursor);
 
-    int visible = 9; // 画面内に収まるよう調整
-    int start = 0;
-    if (g_browser_count > visible) {
-        if (g_browser_cursor >= visible) start = g_browser_cursor - visible + 1;
-        if (start + visible > g_browser_count) start = g_browser_count - visible;
-    }
+        int start = 0;
+        if (g_browser_count > kBrowserRows) {
+            start = g_browser_cursor - (kBrowserRows - 1);
+            if (start < 0) start = 0;
+            const int maxStart = g_browser_count - kBrowserRows;
+            if (start > maxStart) start = maxStart;
+        }
+        for (int row = 0; row < kBrowserRows; ++row) {
+            const int idx = start + row;
+            const int y = 67 + row * kBrowserRowH;
+            if (idx >= g_browser_count) break;
 
-    M5.Display.setTextSize(2); // フォントサイズを2に戻す
-    int y_pos = faces ? 54 : 44;
-    for (int i = start; i < start + visible && i < g_browser_count; i++) {
-        M5.Display.setCursor(faces ? 8 : 79, y_pos); 
-        String name = g_browser_name_buf + g_browser_name_offsets[i];
-        if (g_browser_is_dir[i]) {
-            name = "[" + name + "]";
+            const bool selected = idx == g_browser_cursor;
+            if (selected) M5.Display.fillRect(117, y, 195, 23, TFT_BLACK);
+            const uint16_t fg = selected ? gold : TFT_BLACK;
+            const uint16_t fill = selected ? TFT_BLACK : gold;
+            M5.Display.setTextSize(2);
+            M5.Display.setTextColor(fg, fill);
+            M5.Display.setCursor(122, y + 3);
+            M5.Display.print(selected ? ">" : (g_browser_is_dir[idx] ? "+" : " "));
+            M5.Display.setCursor(137, y + 3);
+            const String file = String(g_browser_name_buf + g_browser_name_offsets[idx]);
+            M5.Display.print(arcade_short_name(file, 14));
         }
-        
-        // はみ出ないように15文字で折り返し防止
-        const int max_chars = faces ? 25 : 15;
-        if ((int)name.length() > max_chars) name = name.substring(0, max_chars);
-        
-        if (i == g_browser_cursor) {
-            M5.Display.setTextColor(TFT_BLACK, TFT_WHITE);
-            while ((int)name.length() < max_chars) name += " ";
-        } else {
-            M5.Display.setTextColor(TFT_WHITE, bg_gray);
+
+        M5.Display.fillRect(0, 213, 320, 27, TFT_BLACK);
+        M5.Display.setTextColor(gold, TFT_BLACK);
+        M5.Display.setTextSize(2);
+        M5.Display.setCursor(7, 220);
+        M5.Display.print("A:OPEN B:BACK SEL:MENU");
+    } else {
+        // Preserve the touch-button gutters (x<74 and x>266).
+        M5.Display.fillRect(74, 27, 192, 194, gold);
+        M5.Display.fillRect(76, 31, 188, 3, TFT_BLACK);
+        M5.Display.setTextColor(TFT_BLACK, gold);
+        M5.Display.setTextSize(2);
+        M5.Display.setCursor(85, 38);
+        M5.Display.print("ROM SELECT");
+        M5.Display.setCursor(79, 58);
+        M5.Display.print(arcade_short_name(g_browser_path, 15));
+
+        int start = 0;
+        if (g_browser_count > kBrowserRows) {
+            start = g_browser_cursor - kBrowserRows + 1;
+            if (start < 0) start = 0;
+            const int maxStart = g_browser_count - kBrowserRows;
+            if (start > maxStart) start = maxStart;
         }
-        
-        M5.Display.println(name);
-        y_pos += 20; // 行間を20pxに設定（フォントサイズ2でも被らない距離）
+        for (int row = 0; row < kBrowserRows; ++row) {
+            const int idx = start + row;
+            if (idx >= g_browser_count) break;
+            const int y = 83 + row * 22;
+            const bool selected = idx == g_browser_cursor;
+            const uint16_t fg = selected ? gold : TFT_BLACK;
+            const uint16_t fill = selected ? TFT_BLACK : gold;
+            if (selected) M5.Display.fillRect(76, y - 1, 188, 22, TFT_BLACK);
+            M5.Display.setTextColor(fg, fill);
+            M5.Display.setTextSize(2);
+            M5.Display.setCursor(80, y + 2);
+            M5.Display.print(selected ? ">" : " ");
+            M5.Display.print(arcade_short_name(String(g_browser_name_buf + g_browser_name_offsets[idx]), 13));
+        }
     }
     M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
 }
@@ -644,72 +744,56 @@ extern "C" void p8_render()
 // Splash screen
 // ---------------------------------------------------------------------------
 
-void show_ronto8_splash() {
-    uint16_t r4_yellow = M5.Display.color565(253, 192, 0);
-    M5.Display.fillScreen(r4_yellow);
-    M5.Display.setTextColor(TFT_BLACK, r4_yellow);
-    
-    // 1. タイトル部分
+void show_ronto8_splash()
+{
+    // Arcade-style title in the native LCD resolution. The banner and wordmark
+    // use only vector primitives so no extra texture asset is needed.
+    const uint16_t gold = arcade_gold();
+    M5.Display.fillScreen(gold);
+    arcade_logo(92, 11, 12);
+    M5.Display.setTextColor(TFT_BLACK, gold);
     M5.Display.setTextSize(4);
-    M5.Display.setCursor(58, 10);
-    M5.Display.print("R8");
-
+    M5.Display.setCursor(106, 99);
+    M5.Display.print("RONTO8");
     M5.Display.setTextSize(2);
-    M5.Display.setCursor(58, 60);
-    M5.Display.print("RONTO8 Core S3");
+    M5.Display.setCursor(65, 137);
+    M5.Display.print("CORE S3 EDITION");
+    M5.Display.fillRect(36, 160, 248, 3, TFT_BLACK);
+    M5.Display.setCursor(52, 169);
+    M5.Display.print("PICO-8 GAME SYSTEM");
+    M5.Display.fillRect(8, 213, 304, 2, TFT_BLACK);
+    M5.Display.setCursor(73, 220);
+    M5.Display.print("FEMTO8 / ZEPTO8");
 
-    // Keep text legible on the physical-controller layout.
-    if (g_faces.present.load()) {
-        M5.Display.setTextSize(2);
-        M5.Display.setCursor(18, 100);
-        M5.Display.println("PICO-8 on CoreS3");
-        M5.Display.setCursor(18, 127);
-        M5.Display.println("Faces Gamepad3");
-    } else {
-        M5.Display.setTextSize(1);
-        M5.Display.setCursor(58, 95);
-        M5.Display.println("RONTO8: A nu wave in the pico8 console.");
-        M5.Display.setCursor(58, 110);
-        M5.Display.println("Powering beyond hardware limitations.");
-        M5.Display.setCursor(58, 125);
-        M5.Display.println("Acceler8 the portable coding.");
-    }
-
-    M5.Display.setTextSize(2);
-    M5.Display.setTextColor(TFT_BLACK, r4_yellow);
-    M5.Display.setCursor(18, 148);
-    M5.Display.print(g_faces.present.load() ? "R6 GAMEPAD READY" : "R6 NO GAMEPAD");
-    if (!g_faces.present.load()) {
-        M5.Display.setCursor(18, 203);
-        M5.Display.print(g_faces.label());
-    }
-
-    // Keep all text at readable size 2 in the Gamepad R5 boot view.
-    M5.Display.setTextSize(2);
-    M5.Display.setCursor(18, 222);
-    M5.Display.println("(C) RONTO8");
-
+    bool prompt_visible = false;
     while (true) {
         M5.update();
         g_faces.update();
-        if (M5.Touch.getCount() > 0) break; // touch always provides a recovery path
-        if (g_faces.present.load() && (g_faces.buttons() & ((1u << 4) | (1u << 6)))) break;
-        
-        // 文字の点滅処理
-        if (millis() % 1000 < 500) M5.Display.setTextColor(TFT_BLACK, r4_yellow);
-        else M5.Display.setTextColor(r4_yellow, r4_yellow);
-        
-        M5.Display.setTextSize(2);
-        M5.Display.setCursor(60, 170); 
-        M5.Display.print(g_faces.present.load() ? "A / START / TOUCH" : "PRESS SCREEN");
-        delay(50);
+        if (M5.Touch.getCount() > 0) break;
+        if (g_faces.present.load() &&
+            (g_faces.buttons() & ((1u << 4) | (1u << 6)))) break;
+
+        const bool want_visible = (millis() / 550u) % 2u == 0u;
+        if (prompt_visible != want_visible) {
+            prompt_visible = want_visible;
+            M5.Display.fillRect(30, 188, 260, 23, gold);
+            if (prompt_visible) {
+                M5.Display.fillRect(30, 188, 260, 23, TFT_BLACK);
+                M5.Display.setTextSize(2);
+                M5.Display.setTextColor(gold, TFT_BLACK);
+                M5.Display.setCursor(g_faces.present.load() ? 55 : 72, 191);
+                M5.Display.print(g_faces.present.load() ?
+                                 "PRESS START BUTTON" : "TOUCH TO START");
+            }
+        }
+        delay(30);
     }
-    
-    // 最後に全消去してLoadingを表示
-    M5.Display.fillScreen(r4_yellow);
-    M5.Display.setTextColor(TFT_BLACK, r4_yellow);
-    M5.Display.setCursor(60, 180);
-    M5.Display.print("Loading...          ");
+
+    M5.Display.fillScreen(gold);
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(TFT_BLACK, gold);
+    M5.Display.setCursor(102, 112);
+    M5.Display.print("LOADING...");
 }
 
 // ---------------------------------------------------------------------------
