@@ -41,7 +41,7 @@ The driver reads the controls without rewriting the Gamepad3 firmware or configu
 
 - **Detected:** physical Gamepad3 mode; 320×240 fullscreen on the CoreS3 LCD, with no on-screen controls or black bars. This fills the 4:3 screen by stretching PICO-8's original square image (non-square pixels).
 - **Not detected:** original on-screen touch gamepad and 192×192 rendering.
-- **Keys:** D-pad = movement / ROM browser; A = O / confirm; B = X / back; START = pause / confirm; SELECT+UP/DOWN = volume.
+- **Keys:** D-pad = movement / ROM browser; A = O / confirm; B = X / back; START = PICO-8 pause / confirm; **SELECT = RONTO8 settings (volume / restart game)**.
 - **Stability:** IRQ-driven 1-byte direct key reads, periodic I2C model-ID probes, multiple failed probes required before disconnecting.
 - ROM browser is full-width in Gamepad3 mode; the header says PAD READY (or TOUCH when no Gamepad3 is found).
 - Touching the splash screen always works as a fallback, even when the Gamepad3 is detected.
@@ -109,6 +109,29 @@ The ROM browser header now shows **R6 PAD**, then **R6 UP / R6 DOWN / R6 LEFT / 
 **「GAMEPAD READY」なのに操作できない問題:** R5のIRQレベル依存を修正し、公式ドライバによるキー取得を毎回実行します。ROM一覧上部には入力中の物理ボタンを大きな文字で表示します。既存のR3 APP-onlyコマンド `RUN_THIS_R8CORES3_FACES_APP_ONLY.cmd COM10` で更新可能です。
 
 **State:** GitHub source updated, static checks passed. R6 firmware build and physical verification are pending. The release branch, M5Burner build, bootloader, partitions, NVS and storage are not changed.
+
+### R7 — SELECT settings menu / SELECT設定メニュー
+
+After R6 physical Gamepad3 input was confirmed working on hardware (2026-11-09), R7 adds a readable on-device settings menu triggered by the **physical SELECT button**. The normal PICO-8 **START/pause** action is unchanged.
+
+| Button | While the settings menu is open |
+| --- | --- |
+| SELECT | Close the menu, resume game |
+| D-pad UP / DOWN | Select a menu item |
+| D-pad LEFT / RIGHT | Decrease/increase volume on the VOLUME item |
+| A | Confirm; on VOLUME also increases by one step |
+| B | Close without restarting the game (volume changes are retained) |
+
+- **During a game:** `CONTINUE` / `RESET GAME` / `VOLUME XX%`. Selecting RESET GAME performs an **in-process Lua/cart reload**, not an ESP32 restart. The original game cart is reloaded and its state starts over.
+- **In the ROM browser:** `CONTINUE` / `VOLUME XX%` only. Restarting a cart is not relevant before one is selected.
+- The game stops advancing while the menu is open, and the audio task outputs silence. Volume changes use the existing M5 speaker API and are **saved to Preferences when the menu closes**.
+- Menu text uses size-2 fonts throughout. All graphics and controller work from R6 remains unchanged. Bootloader/partitions/SD storage are untouched.
+
+**Gamepad3のSELECTボタン**で、CONTINUE（ゲームに戻る）、RESET GAME（現在のゲームを最初から）、VOLUME（音量調整）を表示します。十字キー上下で選択、左右で音量調整、Aで決定、B/SELECTで閉じます。音量は次回起動にも引き継ぎます。
+
+**Status / 状態:** R7 source implementation and static regression checks are complete. **Build and hardware verification are not yet complete.** R6 was confirmed working by the user. Existing public M5Burner firmware and main branch are unchanged.
+
+**Windows APP-only flashing:** Run the existing R3 command `RUN_THIS_R8CORES3_FACES_APP_ONLY.cmd COM10` from the previously provided ZIP; it fetches this development branch and verifies the actual app partition before flashing.
 
 ## ⚙️ Installation / インストール
 
