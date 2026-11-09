@@ -455,7 +455,7 @@ static void draw_browser()
 
     if (faces) {
         // Gamepad3: split file-info / ROM-list design from the approved concept.
-        arcade_title_bar("ROM SELECT", "R9 PAD");
+        arcade_title_bar("ROM SELECT", "R10 PAD");
         M5.Display.setTextSize(2);
         M5.Display.setTextColor(TFT_BLACK, gold);
         M5.Display.setCursor(10, 43);
@@ -1116,7 +1116,7 @@ static void draw_select_menu()
 {
     const uint16_t gold = arcade_gold();
     M5.Display.fillScreen(gold);
-    arcade_title_bar(g_emulator_ready ? "GAME MENU" : "SYSTEM MENU", "R9");
+    arcade_title_bar(g_emulator_ready ? "GAME MENU" : "SYSTEM MENU", "R10");
 
     const int rows = select_menu_count();
     for (int i = 0; i < rows; ++i) {
