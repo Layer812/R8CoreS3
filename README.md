@@ -82,6 +82,22 @@ The preceding hand-written key reader is no longer used. Official M5Faces is pin
 
 **Verification:** R4 source was updated; R4 build / on-device recognition remains to be confirmed. The previous build and APP-only flash did succeed.
 
+### R5: physical detection and key protocol / Gamepad3認識R5
+
+R5 replaces the generic "NO GAMEPAD" with a readable reason on the ROM browser and boot screen:
+
+- **R5 PAD / R5 GAMEPAD READY**: Gamepad3 recognized; 320x240 fullscreen with physical controls.
+- **R5 NO GAMEPAD + 0x08 NO ACK**: the controller is not responding at its default I2C address; with power disconnected, check that the 22-pin Gamepad3 panel is fully seated in Faces Bottom3 and that Bottom3 is fully mated to the CoreS3 M5-Bus.
+- **R5 NO GAMEPAD + 0x08 BAD ID**: 0x08 responds, but the returned model ID/protocol is not the expected Gamepad3.
+- **R5 NO GAMEPAD + I2C BUS FAIL**: the internal I2C bus could not be initialized.
+- The driver can also recognize a Gamepad3 that responds to an older direct-key protocol at 0x08, and slowly scans for a valid Gamepad3 model ID at a non-default I2C address.
+
+According to the M5Stack A004-V3 I2C specification, **key reads are direct single-byte I2C reads**, with no register address prefix; register reads such as 0xD0 are only used for device identification. R5 now follows that published behavior. No IAP, firmware update or peripheral configuration writes occur.
+
+**R5では「NO GAMEPAD」だけでなく、通信応答なし（0x08 NO ACK）、ID不一致（0x08 BAD ID）、内部I2C初期化失敗（I2C BUS FAIL）を大きな文字で表示します。** 通信応答がない場合は、電源を落として22ピンのゲームパッドとCoreS3/BOTTOM3の差し込みを確認してください。認識すれば自動的に320×240全面表示になります。
+
+**Status:** R5 code-only revision, build/device verification pending. Use the existing Windows R3 safe APP-only command: `RUN_THIS_R8CORES3_FACES_APP_ONLY.cmd COM10`. **Do not write bootloader/partition/NVS/storage.**
+
 ## ⚙️ Installation / インストール
 
 ### Via [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/intro) (Recommended)
