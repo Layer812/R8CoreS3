@@ -178,13 +178,9 @@ static void draw_browser()
     M5.Display.setCursor(10, 9);
     M5.Display.setTextSize(2); // フォントサイズを2に戻す
     M5.Display.println("R8 BROWSER");
-    M5.Display.setCursor(190, 9);
-    M5.Display.print(faces ? "PAD READY" : "TOUCH");
-    // Keep the last initialization result on screen even when the pad is absent.
-    M5.Display.setTextSize(1);
-    M5.Display.setTextColor(TFT_BLACK, r4_yellow);
-    M5.Display.setCursor(188, 22);
-    M5.Display.print("FACES R4");
+    // R4 is an always-visible version indicator, with a large connection status.
+    M5.Display.setCursor(210, 9);
+    M5.Display.print(faces ? "R4 PAD" : "R4 TOUCH");
 
     M5.Display.setTextSize(faces ? 2 : 1);
     M5.Display.setTextColor(TFT_WHITE, bg_gray);
@@ -624,6 +620,11 @@ void show_ronto8_splash() {
         M5.Display.setCursor(58, 125);
         M5.Display.println("Acceler8 the portable coding.");
     }
+
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(TFT_BLACK, r4_yellow);
+    M5.Display.setCursor(18, 148);
+    M5.Display.print(g_faces.present.load() ? "R4 GAMEPAD READY" : "R4 NO GAMEPAD");
 
     // 3. ライセンス情報を一番下に配置
     if (g_faces.present.load()) {
