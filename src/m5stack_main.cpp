@@ -4,7 +4,11 @@
  * M5Stack CoreS3 entry point and hardware abstraction layer for RONTO8.
  */
 #include <M5Unified.h>
+#include "faces_gamepad3.hpp"
 
+static ronto_faces3::Device g_faces;
+static constexpr int kTouchGameSize = 192;
+static constexpr int kFacesGameSize = 240;
 SemaphoreHandle_t flipSem;
 SemaphoreHandle_t doneSem;
 uint16_t* line_buffer[2];
@@ -14,7 +18,8 @@ void flipTask(void *pvParameters) {
     while (1) {
         xSemaphoreTake(flipSem, portMAX_DELAY);
         if (render_idx >= 0 && line_buffer[0] != NULL) {
-            M5.Display.pushImageDMA(76, 32, 192, 192, line_buffer[render_idx]);
+            if (g_faces.present.load()) M5.Display.pushImageDMA(40, 0, kFacesGameSize, kFacesGameSize, line_buffer[render_idx]);
+            else M5.Display.pushImageDMA(76, 32, kTouchGameSize, kTouchGameSize, line_buffer[render_idx]);
         }
         render_idx = 1 - render_idx;
         xSemaphoreGive(doneSem);
@@ -144,8 +149,9 @@ static void draw_browser()
 {
     uint16_t bg_gray = M5.Display.color565(48, 48, 48);
     
-    // 中央のファイル表示部分をゲーム画面と完全一致 (x=74, y=28)
-    M5.Display.fillRect(74, 28, 192, 192, bg_gray);
+    const bool faces = g_faces.present.load();
+    if (faces) M5.Display.fillScreen(bg_gray);
+    else M5.Display.fillRect(74, 28, 192, 192, bg_gray);
 
     uint16_t r4_yellow = M5.Display.color565(253, 192, 0);
     M5.Display.fillRect(0, 0, 320, 28, r4_yellow);
@@ -155,9 +161,9 @@ static void draw_browser()
     M5.Display.setTextSize(2); // フォントサイズを2に戻す
     M5.Display.println("R8 BROWSER");
 
-    M5.Display.setTextSize(1);
+    M5.Display.setTextSize(faces ? 2 : 1);
     M5.Display.setTextColor(TFT_WHITE, bg_gray);
-    M5.Display.setCursor(79, 34); 
+    M5.Display.setCursor(faces ? 8 : 79, 34); 
     M5.Display.println(g_browser_path);
 
     int visible = 9; // 画面内に収まるよう調整
@@ -168,22 +174,21 @@ static void draw_browser()
     }
 
     M5.Display.setTextSize(2); // フォントサイズを2に戻す
-    int y_pos = 44; // スタート位置を少し下げる
+    int y_pos = faces ? 54 : 44;
     for (int i = start; i < start + visible && i < g_browser_count; i++) {
-        M5.Display.setCursor(79, y_pos); 
+        M5.Display.setCursor(faces ? 8 : 79, y_pos); 
         String name = g_browser_name_buf + g_browser_name_offsets[i];
         if (g_browser_is_dir[i]) {
             name = "[" + name + "]";
         }
         
         // はみ出ないように15文字で折り返し防止
-        if (name.length() > 15) {
-            name = name.substring(0, 15);
-        }
+        const int max_chars = faces ? 25 : 15;
+        if ((int)name.length() > max_chars) name = name.substring(0, max_chars);
         
         if (i == g_browser_cursor) {
             M5.Display.setTextColor(TFT_BLACK, TFT_WHITE);
-            while (name.length() < 15) name += " ";
+            while ((int)name.length() < max_chars) name += " ";
         } else {
             M5.Display.setTextColor(TFT_WHITE, bg_gray);
         }
@@ -243,6 +248,7 @@ uint16_t get_imu_input()
 // ---------------------------------------------------------------------------
 void draw_virtual_gamepad()
 {
+    if (g_faces.present.load()) return;
     uint16_t color_dpad = M5.Display.color565(180, 180, 180);
     uint16_t color_btn  = M5.Display.color565(220, 220, 220);
 
@@ -464,10 +470,25 @@ void process_volume_controls(uint16_t current_btn) {
     }
 }
 
+// The physical panel is autodetected; the original touch path is preserved.
+static uint16_t poll_controller_input()
+{
+    const bool was_present = g_faces.present.load();
+    g_faces.update();
+    const bool is_present = g_faces.present.load();
+    if (was_present != is_present) {
+        M5.Display.fillScreen(TFT_BLACK);
+        if (!g_emulator_ready) draw_browser();
+        if (!is_present) draw_virtual_gamepad();
+        Serial.printf("RONTO8 Faces Gamepad3: %s\n", is_present ? "attached" : "detached");
+    }
+    return is_present ? g_faces.buttons() : get_touch_state();
+}
+
 extern "C" void m5stack_update_input()
 {
     M5.update();
-    uint16_t current_btn = get_touch_state();
+    uint16_t current_btn = poll_controller_input();
     
     process_volume_controls(current_btn);
 
@@ -510,18 +531,18 @@ extern "C" void p8_render()
     
     xSemaphoreTake(doneSem, portMAX_DELAY);
     M5.update(); // SAFE ZONE for I2C
-    
-    for (int y = 0; y < 192; y++) {
-        for (int x = 0; x < 192; x++) {
+    const int image_size = g_faces.present.load() ? kFacesGameSize : kTouchGameSize;
+    for (int y = 0; y < image_size; y++) {
+        for (int x = 0; x < image_size; x++) {
             uint8_t c;
-            int src_x = (x * 128) / 192;
-            int src_y = (y * 128) / 192;
+            int src_x = (x * 128) / image_size;
+            int src_y = (y * 128) / image_size;
             if (src_x % 2 == 0) {
                 c = vram[(src_y * 64) + (src_x / 2)] & 0x0F;
             } else {
                 c = (vram[(src_y * 64) + (src_x / 2)] >> 4) & 0x0F;
             }
-            line_buffer[render_idx][y * 192 + x] = m_colors[c];
+            line_buffer[render_idx][y * image_size + x] = m_colors[c];
         }
     }
     
@@ -561,7 +582,10 @@ void show_ronto8_splash() {
 
     while (true) {
         M5.update();
-        if (M5.Touch.getCount() > 0) break;
+        g_faces.update();
+        if (g_faces.present.load()) {
+            if (g_faces.buttons() & ((1u << 4) | (1u << 6))) break;
+        } else if (M5.Touch.getCount() > 0) break;
         
         // 文字の点滅処理
         if (millis() % 1000 < 500) M5.Display.setTextColor(TFT_BLACK, r4_yellow);
@@ -569,7 +593,7 @@ void show_ronto8_splash() {
         
         M5.Display.setTextSize(2);
         M5.Display.setCursor(60, 170); 
-        M5.Display.print("PRESS SCREEN");
+        M5.Display.print(g_faces.present.load() ? "PRESS A / START" : "PRESS SCREEN");
         delay(50);
     }
     
@@ -608,8 +632,8 @@ void load_selected_rom()
         g_emulator_ready = true;
         // Clear the line buffers so the previous game's frame doesn't flash
         extern uint16_t *line_buffer[2];
-        if (line_buffer[0]) memset(line_buffer[0], 0, 192 * 192 * 2);
-        if (line_buffer[1]) memset(line_buffer[1], 0, 192 * 192 * 2);
+        if (line_buffer[0]) memset(line_buffer[0], 0, kFacesGameSize * kFacesGameSize * 2);
+        if (line_buffer[1]) memset(line_buffer[1], 0, kFacesGameSize * kFacesGameSize * 2);
     } else {
         g_emulator_init_failed = true;
     }
@@ -623,6 +647,7 @@ void setup()
 {
     auto cfg = M5.config();
     M5.begin(cfg);
+    g_faces.begin();
     
     Preferences prefs;
     prefs.begin("ronto8", false);
@@ -635,8 +660,8 @@ void setup()
 
     M5.Display.fillScreen(TFT_BLACK);
 
-    line_buffer[0] = (uint16_t*)heap_caps_malloc(192 * 192 * 2, MALLOC_CAP_SPIRAM);
-    line_buffer[1] = (uint16_t*)heap_caps_malloc(192 * 192 * 2, MALLOC_CAP_SPIRAM);
+    line_buffer[0] = (uint16_t*)heap_caps_malloc(kFacesGameSize * kFacesGameSize * 2, MALLOC_CAP_SPIRAM);
+    line_buffer[1] = (uint16_t*)heap_caps_malloc(kFacesGameSize * kFacesGameSize * 2, MALLOC_CAP_SPIRAM);
     
     flipSem = xSemaphoreCreateBinary();
     doneSem = xSemaphoreCreateBinary();
@@ -688,8 +713,7 @@ void loop()
 
     if (!g_emulator_ready) {
         M5.update();
-        uint16_t touch_btn = get_touch_state();
-        uint16_t current_btn = touch_btn;
+        uint16_t current_btn = poll_controller_input();
         
         process_volume_controls(current_btn);
 
