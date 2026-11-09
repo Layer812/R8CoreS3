@@ -206,6 +206,7 @@ struct Device {
 
     const char* keyLabel() const {
         const uint16_t b=buttons();
+        if (b & (1u<<9)) return "R7 SELECT";
         if (b & (1u<<6)) return "R6 START";
         if (b & (1u<<4)) return "R6 A";
         if (b & (1u<<5)) return "R6 B";
@@ -240,10 +241,9 @@ struct Device {
         if (down & 0x10u) out|=(1u<<4);
         if (down & 0x20u) out|=(1u<<5);
         if (down & 0x80u) out|=(1u<<6);
-        if (down & 0x40u) {
-            if (down & 0x01u) { out&=~(1u<<2); out|=(1u<<8); }
-            if (down & 0x02u) { out&=~(1u<<3); out|=(1u<<7); }
-        }
+        // SELECT is a dedicated menu key. Do not steal SELECT+UP/DOWN
+        // for volume: the menu itself adjusts the saved speaker volume.
+        if (down & 0x40u) out|=(1u<<9);
         return out;
     }
 };
