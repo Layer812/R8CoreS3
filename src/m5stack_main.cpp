@@ -696,8 +696,10 @@ void setup()
 {
     auto cfg = M5.config();
     M5.begin(cfg);
+    // GPIO5 is the safe CoreS3 lane for Faces Bottom3 LEDs when its switch is G25.
+    // Clear any retained white state even if Gamepad3 has not yet been detected.
+    clear_base_leds();
     g_faces.begin();
-    if (g_faces.present.load()) clear_base_leds();
     Serial.printf("RONTO8 Faces Gamepad3 on I2C 0x08: %s\n",
                   g_faces.present.load() ? "READY" : "not detected (touch mode)");
     
