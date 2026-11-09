@@ -928,38 +928,41 @@ static void persist_menu_volume()
 
 static void draw_select_menu()
 {
-    const uint16_t yellow = M5.Display.color565(253, 192, 0);
-    const uint16_t dark = M5.Display.color565(34, 34, 44);
-    M5.Display.fillScreen(TFT_BLACK);
-    M5.Display.fillRect(0, 0, 320, 36, yellow);
-    M5.Display.setTextColor(TFT_BLACK, yellow);
-    M5.Display.setTextSize(2);
-    M5.Display.setCursor(18, 10);
-    M5.Display.print("RONTO8 SETTINGS");
-    M5.Display.setCursor(276, 10);
-    M5.Display.print("R8");
+    const uint16_t gold = arcade_gold();
+    M5.Display.fillScreen(gold);
+    arcade_title_bar(g_emulator_ready ? "GAME MENU" : "SYSTEM MENU", "R9");
 
     const int rows = select_menu_count();
     for (int i = 0; i < rows; ++i) {
-        // Compact but readable rows: all four game-menu items fit above footer.
-        const int y = 43 + i * 40;
-        const bool chosen = i == g_menu_selected;
-        const uint16_t bg = chosen ? yellow : dark;
-        M5.Display.fillRoundRect(12, y, 296, 35, 7, bg);
-        M5.Display.setTextColor(chosen ? TFT_BLACK : TFT_WHITE, bg);
+        const int y = 44 + i * 40;
+        const bool chosen = (i == g_menu_selected);
+        const uint16_t bg = chosen ? TFT_BLACK : gold;
+        const uint16_t fg = chosen ? gold : TFT_BLACK;
+        M5.Display.fillRoundRect(12, y, 296, 35, 4, bg);
+        M5.Display.drawRoundRect(12, y, 296, 35, 4, TFT_BLACK);
+        M5.Display.setTextColor(fg, bg);
         M5.Display.setTextSize(2);
         M5.Display.setCursor(22, y + 9);
         if (i == 0) M5.Display.print("CONTINUE");
         else if (i == select_game_reset_row()) M5.Display.print("RESET GAME");
         else if (i == select_core_reset_row()) M5.Display.print("RESET CORE");
         else if (i == select_volume_row()) {
-            M5.Display.printf("VOLUME    %3d%%", (g_volume * 100 + 127) / 255);
+            M5.Display.printf("VOLUME %3d%%", (g_volume * 100 + 127) / 255);
+            // Ten-bar hardware-style volume meter; always clear at each redraw.
+            const int lit = (g_volume * 10 + 127) / 255;
+            for (int bar = 0; bar < 10; ++bar) {
+                const uint16_t barcolor = bar < lit ? fg :
+                     (chosen ? M5.Display.color565(80, 80, 80)
+                             : M5.Display.color565(245, 226, 156));
+                M5.Display.fillRect(206 + bar * 9, y + 12, 7, 13, barcolor);
+            }
         }
     }
-    M5.Display.fillRect(0, 211, 320, 29, TFT_BLACK);
-    M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+    M5.Display.fillRect(8, 205, 304, 3, TFT_BLACK);
+    M5.Display.fillRect(0, 212, 320, 28, TFT_BLACK);
+    M5.Display.setTextColor(gold, TFT_BLACK);
     M5.Display.setTextSize(2);
-    M5.Display.setCursor(13, 219);
+    M5.Display.setCursor(8, 219);
     M5.Display.print(g_menu_selected == select_volume_row()
         ? "LEFT/RIGHT:VOL B:BACK" : "A:OK B:BACK SEL:CLOSE");
 }
