@@ -8,6 +8,19 @@ RONTO8は、[**M5Stack CoreS3**](https://docs.m5stack.com/ja/core/CoreS3) 専用
 
 ---
 
+## 🎮 Joypad Support / ジョイパッド対応
+
+RONTO8 now supports a **physical joypad** with the M5Stack CoreS3 and Faces Gamepad3. Play PICO-8 games using familiar buttons, while the original touchscreen controls remain available.
+
+RONTO8が**物理ジョイパッド操作**に対応しました。CoreS3とFaces Gamepad3を組み合わせることで、十字キーとボタンでPICO-8ゲームを楽しめます。従来のタッチ操作も引き続き利用できます。
+
+**Supported hardware / 使用製品**
+- [M5Stack CoreS3](https://docs.m5stack.com/ja/core/CoreS3)
+- [M5Stack Faces Bottom3 (A168)](https://shop.m5stack.com/products/m5stack-faces-3-bottom-board)
+- [M5Stack Faces Gamepad3 (A004-V3)](https://shop.m5stack.com/products/m5stack-faces-gamepad-panel-v3-0)
+
+Joypad-compatible build: Install with the **M5Burner share code** shown in the installation section below.
+
 ## ⚠️ Disclaimer / 注意事項
 
 - **Experimental Release / 実験的なリリース**: This is highly experimental code. If you find bugs, please report them gently! (実験的なコードであるため、バグを見つけた場合は優しく教えてください！)
@@ -181,10 +194,10 @@ CoreS3 + Faces Bottom3 + Gamepad3 users can open the RONTO8 settings with **SELE
 
 ### Via [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/intro) (Recommended)
 You can easily install RONTO8 using [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/intro) with the following share code:
-- **Share Code**: `dMCJ0QAV7oI00aqr`
+- **Share Code**: `GrIwixNA9Pp2xbYM`
 
 [M5Burner](https://docs.m5stack.com/en/uiflow/m5burner/intro)のシェアコード検索から簡単にインストールできます：
-- **シェアコード**: `dMCJ0QAV7oI00aqr`
+- **シェアコード**: `GrIwixNA9Pp2xbYM`
 
 ### Building from Source / ソースからビルドする場合
 
