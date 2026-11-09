@@ -180,6 +180,11 @@ static void draw_browser()
     M5.Display.println("R8 BROWSER");
     M5.Display.setCursor(190, 9);
     M5.Display.print(faces ? "PAD READY" : "TOUCH");
+    // Keep the last initialization result on screen even when the pad is absent.
+    M5.Display.setTextSize(1);
+    M5.Display.setTextColor(TFT_BLACK, r4_yellow);
+    M5.Display.setCursor(188, 22);
+    M5.Display.print("FACES R4");
 
     M5.Display.setTextSize(faces ? 2 : 1);
     M5.Display.setTextColor(TFT_WHITE, bg_gray);
@@ -695,6 +700,8 @@ void load_selected_rom()
 void setup()
 {
     auto cfg = M5.config();
+    // Required by the M5Stack official CoreS3 + Faces Gamepad3 example.
+    cfg.fallback_board = m5::board_t::board_M5StackCoreS3;
     M5.begin(cfg);
     // GPIO5 is the safe CoreS3 lane for Faces Bottom3 LEDs when its switch is G25.
     // Clear any retained white state even if Gamepad3 has not yet been detected.
