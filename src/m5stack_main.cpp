@@ -4,11 +4,29 @@
  * M5Stack CoreS3 entry point and hardware abstraction layer for RONTO8.
  */
 #include <M5Unified.h>
+#include <Adafruit_NeoPixel.h>
 #include "faces_gamepad3.hpp"
 
 static ronto_faces3::Device g_faces;
 static constexpr int kTouchGameSize = 192;
-static constexpr int kFacesGameSize = 240;
+static constexpr int kPhysicalWidth = 320;
+static constexpr int kPhysicalHeight = 240;
+static constexpr size_t kBufferPixels = kPhysicalWidth * kPhysicalHeight;
+static std::atomic<bool> g_frame_physical{false};
+
+// Faces Bottom3 A168: LED switch must be at G25 (CoreS3 GPIO5).
+// G15 would connect to CoreS3 GPIO13 (speaker I2S DOUT) and can cause full-white LEDs.
+static Adafruit_NeoPixel g_base_leds(10, 5, NEO_GRB + NEO_KHZ800);
+static bool g_base_leds_initialized = false;
+static void clear_base_leds()
+{
+    if (g_base_leds_initialized) return;
+    g_base_leds.begin();
+    g_base_leds.setBrightness(0);
+    g_base_leds.clear();
+    g_base_leds.show();
+    g_base_leds_initialized = true;
+}
 SemaphoreHandle_t flipSem;
 SemaphoreHandle_t doneSem;
 uint16_t* line_buffer[2];
@@ -18,7 +36,7 @@ void flipTask(void *pvParameters) {
     while (1) {
         xSemaphoreTake(flipSem, portMAX_DELAY);
         if (render_idx >= 0 && line_buffer[0] != NULL) {
-            if (g_faces.present.load()) M5.Display.pushImageDMA(40, 0, kFacesGameSize, kFacesGameSize, line_buffer[render_idx]);
+            if (g_frame_physical.load()) M5.Display.pushImageDMA(0, 0, kPhysicalWidth, kPhysicalHeight, line_buffer[render_idx]);
             else M5.Display.pushImageDMA(76, 32, kTouchGameSize, kTouchGameSize, line_buffer[render_idx]);
         }
         render_idx = 1 - render_idx;
@@ -160,6 +178,8 @@ static void draw_browser()
     M5.Display.setCursor(10, 9);
     M5.Display.setTextSize(2); // フォントサイズを2に戻す
     M5.Display.println("R8 BROWSER");
+    M5.Display.setCursor(190, 9);
+    M5.Display.print(faces ? "PAD READY" : "TOUCH");
 
     M5.Display.setTextSize(faces ? 2 : 1);
     M5.Display.setTextColor(TFT_WHITE, bg_gray);
@@ -477,6 +497,7 @@ static uint16_t poll_controller_input()
     g_faces.update();
     const bool is_present = g_faces.present.load();
     if (was_present != is_present) {
+        if (is_present) clear_base_leds(); // Switch must be at G25, not the audio G15 position.
         M5.Display.fillScreen(TFT_BLACK);
         if (!g_emulator_ready) draw_browser();
         if (!is_present) draw_virtual_gamepad();
@@ -531,31 +552,36 @@ extern "C" void p8_render()
     
     xSemaphoreTake(doneSem, portMAX_DELAY);
     M5.update(); // SAFE ZONE for I2C
-    const int image_size = g_faces.present.load() ? kFacesGameSize : kTouchGameSize;
-    // Two fixed lookup tables avoid per-pixel integer divisions at 240x240.
+    const bool full = g_faces.present.load();
+    const int dst_w = full ? kPhysicalWidth : kTouchGameSize;
+    const int dst_h = full ? kPhysicalHeight : kTouchGameSize;
     static uint8_t map192[kTouchGameSize];
-    static uint8_t map240[kFacesGameSize];
+    static uint8_t map320[kPhysicalWidth];
+    static uint8_t map240[kPhysicalHeight];
     static bool maps_ready = false;
     if (!maps_ready) {
         for (int i = 0; i < kTouchGameSize; ++i) map192[i] = (i * 128) / kTouchGameSize;
-        for (int i = 0; i < kFacesGameSize; ++i) map240[i] = (i * 128) / kFacesGameSize;
+        for (int i = 0; i < kPhysicalWidth; ++i) map320[i] = (i * 128) / kPhysicalWidth;
+        for (int i = 0; i < kPhysicalHeight; ++i) map240[i] = (i * 128) / kPhysicalHeight;
         maps_ready = true;
     }
-    const uint8_t* pos = g_faces.present.load() ? map240 : map192;
-    for (int y = 0; y < image_size; y++) {
-        const int src_y = pos[y];
-        for (int x = 0; x < image_size; x++) {
+    const uint8_t* xmap = full ? map320 : map192;
+    const uint8_t* ymap = full ? map240 : map192;
+    for (int y = 0; y < dst_h; y++) {
+        const int src_y = ymap[y];
+        for (int x = 0; x < dst_w; x++) {
             uint8_t c;
-            const int src_x = pos[x];
+            const int src_x = xmap[x];
             if (src_x % 2 == 0) {
                 c = vram[(src_y * 64) + (src_x / 2)] & 0x0F;
             } else {
                 c = (vram[(src_y * 64) + (src_x / 2)] >> 4) & 0x0F;
             }
-            line_buffer[render_idx][y * image_size + x] = m_colors[c];
+            line_buffer[render_idx][y * dst_w + x] = m_colors[c];
         }
     }
     
+    g_frame_physical.store(full);
     xSemaphoreGive(flipSem);
 }
 
@@ -607,9 +633,8 @@ void show_ronto8_splash() {
     while (true) {
         M5.update();
         g_faces.update();
-        if (g_faces.present.load()) {
-            if (g_faces.buttons() & ((1u << 4) | (1u << 6))) break;
-        } else if (M5.Touch.getCount() > 0) break;
+        if (M5.Touch.getCount() > 0) break; // touch always provides a recovery path
+        if (g_faces.present.load() && (g_faces.buttons() & ((1u << 4) | (1u << 6)))) break;
         
         // 文字の点滅処理
         if (millis() % 1000 < 500) M5.Display.setTextColor(TFT_BLACK, r4_yellow);
@@ -617,7 +642,7 @@ void show_ronto8_splash() {
         
         M5.Display.setTextSize(2);
         M5.Display.setCursor(60, 170); 
-        M5.Display.print(g_faces.present.load() ? "PRESS A / START" : "PRESS SCREEN");
+        M5.Display.print(g_faces.present.load() ? "A / START / TOUCH" : "PRESS SCREEN");
         delay(50);
     }
     
@@ -656,8 +681,8 @@ void load_selected_rom()
         g_emulator_ready = true;
         // Clear the line buffers so the previous game's frame doesn't flash
         extern uint16_t *line_buffer[2];
-        if (line_buffer[0]) memset(line_buffer[0], 0, kFacesGameSize * kFacesGameSize * 2);
-        if (line_buffer[1]) memset(line_buffer[1], 0, kFacesGameSize * kFacesGameSize * 2);
+        if (line_buffer[0]) memset(line_buffer[0], 0, kBufferPixels * sizeof(uint16_t));
+        if (line_buffer[1]) memset(line_buffer[1], 0, kBufferPixels * sizeof(uint16_t));
     } else {
         g_emulator_init_failed = true;
     }
@@ -672,6 +697,9 @@ void setup()
     auto cfg = M5.config();
     M5.begin(cfg);
     g_faces.begin();
+    if (g_faces.present.load()) clear_base_leds();
+    Serial.printf("RONTO8 Faces Gamepad3 on I2C 0x08: %s\n",
+                  g_faces.present.load() ? "READY" : "not detected (touch mode)");
     
     Preferences prefs;
     prefs.begin("ronto8", false);
@@ -684,8 +712,17 @@ void setup()
 
     M5.Display.fillScreen(TFT_BLACK);
 
-    line_buffer[0] = (uint16_t*)heap_caps_malloc(kFacesGameSize * kFacesGameSize * 2, MALLOC_CAP_SPIRAM);
-    line_buffer[1] = (uint16_t*)heap_caps_malloc(kFacesGameSize * kFacesGameSize * 2, MALLOC_CAP_SPIRAM);
+    line_buffer[0] = (uint16_t*)heap_caps_malloc(kBufferPixels * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    line_buffer[1] = (uint16_t*)heap_caps_malloc(kBufferPixels * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!line_buffer[0] || !line_buffer[1]) {
+        M5.Display.fillScreen(TFT_BLACK);
+        M5.Display.setTextColor(TFT_RED, TFT_BLACK);
+        M5.Display.setTextSize(2);
+        M5.Display.setCursor(12, 68);
+        M5.Display.println("VIDEO BUFFER ERROR");
+        Serial.println("ERROR: cannot allocate PSRAM RGB565 buffers");
+        for (;;) delay(1000);
+    }
     
     flipSem = xSemaphoreCreateBinary();
     doneSem = xSemaphoreCreateBinary();
