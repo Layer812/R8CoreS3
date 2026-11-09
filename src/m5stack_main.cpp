@@ -8,6 +8,9 @@
 #include <pngle.h>  // Already used by the existing PICO-8 cartridge parser.
 #include "faces_gamepad3.hpp"
 
+// Version shown at startup; keep in sync with the published RONTO8 release.
+static constexpr char kRonto8Version[] = "1.01";
+
 static ronto_faces3::Device g_faces;
 static constexpr int kTouchGameSize = 192;
 static constexpr int kPhysicalWidth = 320;
@@ -925,8 +928,9 @@ void show_ronto8_splash()
     M5.Display.setCursor(82, 99);  // Align RONTO8 below the R8 logo (one glyph left).
     M5.Display.print("RONTO8");
     M5.Display.setTextSize(2);
-    M5.Display.setCursor(65, 137);
-    M5.Display.print("CORE S3 EDITION");
+    M5.Display.setCursor(34, 137);
+    M5.Display.print("CORE S3 EDITION v");
+    M5.Display.print(kRonto8Version);
     M5.Display.fillRect(36, 160, 248, 3, TFT_BLACK);
     M5.Display.setCursor(52, 169);
     M5.Display.print("PICO-8 GAME SYSTEM");
