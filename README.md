@@ -110,28 +110,35 @@ The ROM browser header now shows **R6 PAD**, then **R6 UP / R6 DOWN / R6 LEFT / 
 
 **State:** GitHub source updated, static checks passed. R6 firmware build and physical verification are pending. The release branch, M5Burner build, bootloader, partitions, NVS and storage are not changed.
 
-### R7 — SELECT settings menu / SELECT設定メニュー
+### R8 — SELECT settings menu with RESET CORE / SELECT設定メニュー
 
-After R6 physical Gamepad3 input was confirmed working on hardware (2026-11-09), R7 adds a readable on-device settings menu triggered by the **physical SELECT button**. The normal PICO-8 **START/pause** action is unchanged.
+CoreS3 + Faces Bottom3 + Gamepad3 users can open the RONTO8 settings with **SELECT**. The confirmed-working R6 gamepad input and 320×240 fullscreen are retained.
 
-| Button | While the settings menu is open |
+**When a game is running, menu order:**
+1. **CONTINUE** — return to the game
+2. **RESET GAME** — reload the current SD cartridge/Lua game state without rebooting the CoreS3
+3. **RESET CORE** — perform an intentional software restart of the **CoreS3 MCU** via `ESP.restart()`; the device starts RONTO8 from its normal splash/browser flow
+4. **VOLUME XX%** — adjust speaker volume
+
+**In the ROM browser:** CONTINUE / RESET CORE / VOLUME (RESET GAME is unavailable because no cartridge is running).
+
+| Gamepad3 control | In the SELECT menu |
 | --- | --- |
-| SELECT | Close the menu, resume game |
-| D-pad UP / DOWN | Select a menu item |
-| D-pad LEFT / RIGHT | Decrease/increase volume on the VOLUME item |
-| A | Confirm; on VOLUME also increases by one step |
-| B | Close without restarting the game (volume changes are retained) |
+| SELECT | Open/close menu |
+| UP / DOWN | Move highlight |
+| LEFT / RIGHT | Lower/raise volume when VOLUME is selected |
+| A (or START) | Execute highlighted action |
+| B | Close menu without resetting |
 
-- **During a game:** `CONTINUE` / `RESET GAME` / `VOLUME XX%`. Selecting RESET GAME performs an **in-process Lua/cart reload**, not an ESP32 restart. The original game cart is reloaded and its state starts over.
-- **In the ROM browser:** `CONTINUE` / `VOLUME XX%` only. Restarting a cart is not relevant before one is selected.
-- The game stops advancing while the menu is open, and the audio task outputs silence. Volume changes use the existing M5 speaker API and are **saved to Preferences when the menu closes**.
-- Menu text uses size-2 fonts throughout. All graphics and controller work from R6 remains unchanged. Bootloader/partitions/SD storage are untouched.
+- The new four-item game menu uses **text-size 2** and compact 35-pixel-high rows; all four items and footer fit within the 320×240 LCD.
+- The user explicitly selects RESET CORE and presses A/START before `ESP.restart()` is executed; there is no automatic CoreS3 reset on menu open or close.
+- Pending volume changes are saved before RESET CORE; other settings already persist as before.
+- RESET CORE does not erase or rewrite the bootloader, partition table, NVS, SD card or storage. This is a normal MCU software restart, **not a flash or factory reset**.
+- Existing R3 Windows safe APP-only flashing command remains: `RUN_THIS_R8CORES3_FACES_APP_ONLY.cmd COM10` (use the actual port).
 
-**Gamepad3のSELECTボタン**で、CONTINUE（ゲームに戻る）、RESET GAME（現在のゲームを最初から）、VOLUME（音量調整）を表示します。十字キー上下で選択、左右で音量調整、Aで決定、B/SELECTで閉じます。音量は次回起動にも引き継ぎます。
+**ゲーム中のSELECTメニュー**は「CONTINUE → RESET GAME → RESET CORE → VOLUME」の順です。RESET COREをAで選ぶとCoreS3をソフトウェア再起動します。SDカードや保存領域の初期化は行いません。ROM一覧では「CONTINUE → RESET CORE → VOLUME」です。
 
-**Status / 状態:** R7 source implementation and static regression checks are complete. **Build and hardware verification are not yet complete.** R6 was confirmed working by the user. Existing public M5Burner firmware and main branch are unchanged.
-
-**Windows APP-only flashing:** Run the existing R3 command `RUN_THIS_R8CORES3_FACES_APP_ONLY.cmd COM10` from the previously provided ZIP; it fetches this development branch and verifies the actual app partition before flashing.
+**Status / 状態:** R8 source committed, source-level checks passed. R8 firmware build and physical test are **not yet verified**. The public `main` and M5Burner firmware remain unchanged.
 
 ## ⚙️ Installation / インストール
 
