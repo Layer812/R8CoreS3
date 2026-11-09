@@ -52,6 +52,7 @@ void flipTask(void *pvParameters) {
 #include <freertos/task.h>
 #include <Preferences.h>
 #include <math.h>
+#include <atomic>
 
 extern "C" {
 #include "p8_emu.h"
@@ -91,6 +92,22 @@ static volatile bool g_audio_task_started   = false;
 int g_volume = 255;
 bool g_held_O = false;
 bool g_held_X = false;
+
+// Gamepad3 SELECT: simple readable settings panel, separate from PICO-8
+// START/pause. The PICO engine stops stepping while this menu is visible.
+static bool g_select_menu_open = false;
+static bool g_select_menu_pending = false;
+static bool g_select_pressed_prev = false;
+static bool g_swallow_until_release = false;
+static std::atomic<bool> g_audio_hold{false};
+static uint16_t g_menu_prev_btn = 0;
+static int g_menu_selected = 0;
+static bool g_menu_volume_dirty = false;
+static String g_current_rom_path;
+
+static void draw_select_menu();
+static void begin_select_menu();
+static void update_select_menu();
 
 extern "C" {
     char g_last_error_message[256] = {0};
@@ -467,7 +484,11 @@ static void audio_task(void *pvParameters)
 
     int current_buf = 0;
     while (1) {
-        render_sounds(audio_buf[current_buf], sample_count);
+        if (g_audio_hold.load()) {
+            memset(audio_buf[current_buf], 0, sample_count * sizeof(int16_t));
+        } else {
+            render_sounds(audio_buf[current_buf], sample_count);
+        }
 
         while (!M5.Speaker.playRaw(audio_buf[current_buf], sample_count, 22050, false, 1, 0)) {
             vTaskDelay(pdMS_TO_TICKS(1));
@@ -512,6 +533,15 @@ static uint16_t poll_controller_input()
         Serial.printf("RONTO8 Faces Gamepad3: %s\n", is_present ? "attached" : "detached");
     }
     const uint16_t btn = is_present ? g_faces.buttons() : get_touch_state();
+    const bool select_down = is_present && (btn & (1u << 9));
+    if (select_down && !g_select_pressed_prev && !g_select_menu_open)
+        g_select_menu_pending = true;
+    g_select_pressed_prev = select_down;
+    if (g_select_menu_open) return btn; // Physical key state for menu navigation.
+    if (g_swallow_until_release) {
+        if (btn == 0) g_swallow_until_release = false;
+        return 0; // Do not leak A/B/SELECT that closed the menu into the game.
+    }
     // Show a large, live key name in the existing ROM browser header.
     // This confirms that the button reached RONTO8 without requiring
     // a separate diagnostics program or a tiny-text serial console.
@@ -556,7 +586,8 @@ extern "C" void m5stack_update_input()
     }
     
     extern uint16_t m_buttons[8];
-    m_buttons[0] = current_btn;
+    m_buttons[0] = (g_select_menu_open || g_select_menu_pending)
+        ? 0 : (current_btn & ~(1u << 9));
 }
 
 extern "C" void m5stack_suspend_frame_buf(void) {}
@@ -702,10 +733,9 @@ void load_selected_rom()
 
     // SD.open() uses "/" as root, but fopen() (used by the parser) needs the
     // VFS mount point which is "/sd" by default with SD.begin().
-    static String current_rom_path;
-    current_rom_path = "/sd" + fullpath;
+    g_current_rom_path = "/sd" + fullpath;
 
-    if (p8_init_file_with_param(current_rom_path.c_str(), NULL) == 0) {
+    if (p8_init_file_with_param(g_current_rom_path.c_str(), NULL) == 0) {
         g_emulator_ready = true;
         // Clear the line buffers so the previous game's frame doesn't flash
         extern uint16_t *line_buffer[2];
@@ -788,10 +818,157 @@ void setup()
     draw_virtual_gamepad(); // コントローラーの描画は最初の一回だけ
 }
 
+
+/* Gamepad3 SELECT menu (physical buttons):
+ * SELECT opens/closes, UP/DOWN choose, LEFT/RIGHT adjust selected volume,
+ * A/START activates, B cancels. It is also available in the ROM browser,
+ * where the restart entry is intentionally omitted.
+ */
+static int select_menu_count() { return g_emulator_ready ? 3 : 2; }
+static int select_volume_row() { return g_emulator_ready ? 2 : 1; }
+
+static void persist_menu_volume()
+{
+    if (!g_menu_volume_dirty) return;
+    Preferences prefs;
+    if (prefs.begin("ronto8", false)) {
+        prefs.putInt("volume", g_volume);
+        prefs.end();
+    }
+    g_menu_volume_dirty = false;
+}
+
+static void draw_select_menu()
+{
+    const uint16_t yellow = M5.Display.color565(253, 192, 0);
+    const uint16_t dark = M5.Display.color565(34, 34, 44);
+    M5.Display.fillScreen(TFT_BLACK);
+    M5.Display.fillRect(0, 0, 320, 36, yellow);
+    M5.Display.setTextColor(TFT_BLACK, yellow);
+    M5.Display.setTextSize(2);
+    M5.Display.setCursor(18, 10);
+    M5.Display.print("RONTO8  SETTINGS");
+
+    const int rows = select_menu_count();
+    for (int i = 0; i < rows; ++i) {
+        const int y = 49 + i * 51;
+        const bool chosen = i == g_menu_selected;
+        const uint16_t bg = chosen ? yellow : dark;
+        M5.Display.fillRoundRect(12, y, 296, 42, 7, bg);
+        M5.Display.setTextColor(chosen ? TFT_BLACK : TFT_WHITE, bg);
+        M5.Display.setTextSize(2);
+        M5.Display.setCursor(22, y + 12);
+        const int volrow = select_volume_row();
+        if (i == 0) M5.Display.print("CONTINUE");
+        else if (i == volrow) {
+            M5.Display.printf("VOLUME    %3d%%", (g_volume * 100 + 127) / 255);
+        } else M5.Display.print("RESET GAME");
+    }
+    M5.Display.fillRect(0, 211, 320, 29, TFT_BLACK);
+    M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+    M5.Display.setTextSize(2);
+    M5.Display.setCursor(13, 219);
+    M5.Display.print("A:OK B:BACK SEL:CLOSE");
+}
+
+static void begin_select_menu()
+{
+    g_select_menu_pending = false;
+    g_select_menu_open = true;
+    g_menu_selected = 0;
+    g_menu_volume_dirty = false;
+    g_menu_prev_btn = (1u << 9); // Opening SELECT must be released before toggling.
+    g_audio_hold.store(true);
+    draw_select_menu();
+}
+
+static void close_select_menu()
+{
+    persist_menu_volume();
+    g_select_menu_open = false;
+    g_select_menu_pending = false;
+    g_swallow_until_release = true;
+    g_audio_hold.store(false);
+    if (!g_emulator_ready) {
+        draw_browser();
+        draw_virtual_gamepad();
+    } else {
+        // Game framebuffer is redrawn on the next p8_step/p8_flip.
+        M5.Display.fillScreen(TFT_BLACK);
+    }
+    m_start_time = 0; // Avoid a large game-time delta from the paused menu.
+}
+
+static void adjust_select_volume(int delta)
+{
+    const int next = constrain(g_volume + delta, 0, 255);
+    if (next == g_volume) return;
+    g_volume = next;
+    g_menu_volume_dirty = true;
+    M5.Speaker.setVolume(g_volume);
+    draw_select_menu();
+}
+
+static void update_select_menu()
+{
+    M5.update();
+    const uint16_t btn = poll_controller_input();
+    const uint16_t pressed = btn & ~g_menu_prev_btn;
+    g_menu_prev_btn = btn;
+
+    if (pressed & ((1u << 5) | (1u << 9))) { // B or SELECT
+        close_select_menu();
+        return;
+    }
+    if (pressed & (1u << 2)) { // UP
+        g_menu_selected = (g_menu_selected + select_menu_count() - 1) % select_menu_count();
+        draw_select_menu();
+    } else if (pressed & (1u << 3)) { // DOWN
+        g_menu_selected = (g_menu_selected + 1) % select_menu_count();
+        draw_select_menu();
+    }
+    if (g_menu_selected == select_volume_row()) {
+        if (pressed & (1u << 0)) adjust_select_volume(-16);
+        if (pressed & (1u << 1)) adjust_select_volume(+16);
+    }
+    if (pressed & ((1u << 4) | (1u << 6))) { // A or START
+        if (g_menu_selected == 0) {
+            close_select_menu();
+        } else if (g_menu_selected == select_volume_row()) {
+            // A on volume increases it; LEFT/RIGHT also work.
+            adjust_select_volume(+16);
+        } else if (g_emulator_ready && !g_current_rom_path.isEmpty()) {
+            // p8_restart() longjmps through a returned stack frame on this
+            // CoreS3 build. Use a fresh cartridge/Lua reload instead.
+            M5.Display.fillScreen(TFT_BLACK);
+            M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+            M5.Display.setTextSize(2);
+            M5.Display.setCursor(65, 100);
+            M5.Display.println("RESTARTING...");
+            delay(25); // Allow audio worker to observe g_audio_hold before reloading.
+            const int result = p8_reload_file_with_param(g_current_rom_path.c_str(), NULL);
+            g_emulator_init_failed = (result != 0);
+            if (result == 0) {
+                if (line_buffer[0]) memset(line_buffer[0], 0, kBufferPixels * sizeof(uint16_t));
+                if (line_buffer[1]) memset(line_buffer[1], 0, kBufferPixels * sizeof(uint16_t));
+            }
+            close_select_menu();
+        }
+    }
+}
+
 void process_volume_controls(uint16_t current_btn);
 
 void loop()
 {
+    if (g_select_menu_open) {
+        update_select_menu();
+        return;
+    }
+    if (g_select_menu_pending) {
+        begin_select_menu();
+        return;
+    }
     if (g_emulator_init_failed) {
         static bool shown = false;
         if (!shown) {
@@ -807,7 +984,11 @@ void loop()
     if (!g_emulator_ready) {
         M5.update();
         uint16_t current_btn = poll_controller_input();
-        
+        if (g_select_menu_pending) {
+            begin_select_menu();
+            return;
+        }
+
         process_volume_controls(current_btn);
 
         // ROM browser: debounce with edge detection + repeat (long-press)
@@ -892,6 +1073,8 @@ void loop()
         M5.Display.fillScreen(TFT_BLACK);
         draw_virtual_gamepad();
     } else {
-        // Game running
+        // Game running. SELECT is observed by m5stack_update_input()
+        // during p8_step(); present the menu after stepping returns.
         p8_step();
+        if (g_select_menu_pending) begin_select_menu();
     }}
