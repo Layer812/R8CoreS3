@@ -33,6 +33,22 @@ RONTO8は、[**M5Stack CoreS3**](https://docs.m5stack.com/ja/core/CoreS3) 専用
   - **Start / Pause**: Bottom center (画面下部中央)
   - **Volume**: Left edge volume buttons (画面左端のボリュームボタン)
 
+## R9 Retro Arcade UI — CoreS3 / Gamepad3 (2026-11-09)
+
+The R8/RONTO8 yellow-and-black 1990s arcade visual theme now extends through the **real CoreS3 320×240 firmware UI**, not only a mockup. The development branch implements:
+
+- **Title:** large custom block-pixel **R8** logo, RONTO8 branding, CORE S3 EDITION, PICO-8 GAME SYSTEM, blinking **PRESS START BUTTON**, and FEMTO8 / ZEPTO8 credit. Works with Gamepad3 A/START and fallback touch.
+- **ROM file browser with Gamepad3:** yellow background, black arcade R8 header, six readable 24px-spaced entries with black selection bar, selected ROM name and directory position in the left file-info panel, path at the top, and a bottom black controller legend **A:OPEN B:BACK SEL:MENU**.
+- **Touch-only fallback:** the ROM list uses the central 192-pixel-wide region and **preserves the left/right on-screen controls**. Text stays at least `setTextSize(2)` in the new file browser.
+- **SELECT menu:** the same yellow-black bars and thick black dividers, using readable text and an actual ten-bar volume meter. The R8 feature set and ordering are preserved: **CONTINUE → RESET GAME → RESET CORE → VOLUME** during play; RESET GAME is absent when browsing.
+- **No fake screenshot thumbnails.** The left panel identifies the selected ROM and page number without pretending to preview a game that has not loaded.
+- **Navigation:** Gamepad3 UP/DOWN selects entries, LEFT/RIGHT moves by a visible page of six files, A opens the selected ROM, B goes up a directory, SELECT opens the settings menu.
+- **Safe update:** run the previously provided `RUN_THIS_R8CORES3_FACES_APP_ONLY.cmd COM10` from the R3 ZIP, with the real COM port. It obtains this branch and writes only the APP partition after checking the actual partition map.
+
+**RONTO8 R9：タイトル、ROMファイラー、SELECT設定画面を、黄色×黒のレトロアーケード風デザインで統一しました。** ファイラーでは大きなフォント、黒い選択帯、ファイル情報パネル、操作案内を表示します。タッチ操作版は左右の仮想ボタンを維持します。RESET GAME／RESET CORE／音量変更は前バージョンから継承します。
+
+**Development status:** R9 changes are committed and source-level checks are complete; full firmware build and physical visual verification are still pending. `main` and published M5Burner releases remain unchanged.
+
 ## 🎮 Faces Gamepad3 (development branch) / 物理ゲームパッド対応（開発版）
 
 M5Stack **CoreS3 + Faces Bottom3 (A168) + Faces Gamepad3 (A004-V3)** are supported by the development branch.
