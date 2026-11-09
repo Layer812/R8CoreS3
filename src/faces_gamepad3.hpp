@@ -140,7 +140,7 @@ struct Device {
                     const uint8_t next = official.getState().raw;
                     if (raw != next) {
                         raw = next;
-                        Serial.printf("RONTO8 R6 PAD raw=%02X buttons=%04X IRQ=%d\n",
+                        Serial.printf("RONTO8 R9 PAD raw=%02X buttons=%04X IRQ=%d\n",
                                       raw, buttons(), digitalRead(irq_pin));
                     }
                 } else if (digitalRead(irq_pin) == LOW) {
@@ -149,7 +149,7 @@ struct Device {
                     uint8_t next = 0xFF;
                     if (directRead(address, next) && raw != next) {
                         raw = next;
-                        Serial.printf("RONTO8 R6 PAD direct=%02X buttons=%04X\n",
+                        Serial.printf("RONTO8 R9 PAD direct=%02X buttons=%04X\n",
                                       raw, buttons());
                     }
                 }
@@ -206,17 +206,17 @@ struct Device {
 
     const char* keyLabel() const {
         const uint16_t b=buttons();
-        if (b & (1u<<9)) return "R7 SELECT";
-        if (b & (1u<<6)) return "R6 START";
-        if (b & (1u<<4)) return "R6 A";
-        if (b & (1u<<5)) return "R6 B";
-        if (b & (1u<<2)) return "R6 UP";
-        if (b & (1u<<3)) return "R6 DOWN";
-        if (b & (1u<<0)) return "R6 LEFT";
-        if (b & (1u<<1)) return "R6 RIGHT";
-        if (b & (1u<<8)) return "R6 VOL+";
-        if (b & (1u<<7)) return "R6 VOL-";
-        return "R6 PAD";
+        if (b & (1u<<9)) return "R9 SELECT";
+        if (b & (1u<<6)) return "R9 START";
+        if (b & (1u<<4)) return "R9 A";
+        if (b & (1u<<5)) return "R9 B";
+        if (b & (1u<<2)) return "R9 UP";
+        if (b & (1u<<3)) return "R9 DOWN";
+        if (b & (1u<<0)) return "R9 LEFT";
+        if (b & (1u<<1)) return "R9 RIGHT";
+        if (b & (1u<<8)) return "R9 VOL+";
+        if (b & (1u<<7)) return "R9 VOL-";
+        return "R9 PAD";
     }
 
     const char* label() const {
