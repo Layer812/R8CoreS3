@@ -33,6 +33,12 @@ RONTO8は、[**M5Stack CoreS3**](https://docs.m5stack.com/ja/core/CoreS3) 専用
   - **Start / Pause**: Bottom center (画面下部中央)
   - **Volume**: Left edge volume buttons (画面左端のボリュームボタン)
 
+### Browser UI cleanup / ファイラー表示の整理 (2026-11-09)
+
+The experimental **R9 PAD / R10 PAD** top-right markers and the live key-debug overlay have been removed. The ROM browser header now consistently displays **R8 ROM SELECT** without repainting hardware status when the D-pad moves. The same revision stamp is removed from the settings menu. This is a presentation-only correction; Gamepad3 input, real ROM label thumbnails, 320×240 rendering, SELECT menu, safe game/core resets, and APP-only flashing are unchanged.
+
+**十字キー操作時に右上がR9 PAD／R10 PADと切り替わる表示を削除しました。** 上部見出しをROM SELECTに統一し、動作確認用のキー状態表示による上書きをなくしました。
+
 ## R10 — Real ROM preview images / 実サムネイル表示
 
 The Gamepad3 file browser now reads the **selected cartridge's actual image**, rather than showing filename-only placeholder text in the left preview panel:
