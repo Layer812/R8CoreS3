@@ -418,10 +418,11 @@ void draw_virtual_gamepad()
     // さらに2ドット右、16ドット下
     int sx = 273, sy = 182;
     M5.Display.drawRoundRect(sx, sy, 45, 20, 4, color_dpad); 
-    M5.Display.setCursor(sx + 8, sy + 6);
+    // Keep the touch fallback readable; 5x 'START' at size 1 was tiny.
+    M5.Display.setCursor(sx + 10, sy + 3);
     M5.Display.setTextColor(color_dpad);
-    M5.Display.setTextSize(1);
-    M5.Display.print("START");
+    M5.Display.setTextSize(2);
+    M5.Display.print("ST");
 
     // --- ボリュームボタン (カーソルの上) ---
     // さらに2px下に移動
