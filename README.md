@@ -33,6 +33,21 @@ RONTO8は、[**M5Stack CoreS3**](https://docs.m5stack.com/ja/core/CoreS3) 専用
   - **Start / Pause**: Bottom center (画面下部中央)
   - **Volume**: Left edge volume buttons (画面左端のボリュームボタン)
 
+## R10 — Real ROM preview images / 実サムネイル表示
+
+The Gamepad3 file browser now reads the **selected cartridge's actual image**, rather than showing filename-only placeholder text in the left preview panel:
+
+- **`.p8.png` cartridges:** decode using the existing `pngle` decoder, extract the 128×128 label artwork at image coordinates x=16–143, y=24–151 from the 160×205 PICO-8 cart PNG, and rescale to a 96×96 RGB565 preview.
+- **Text `.p8` cartridges:** read `__label__` if provided (128 lines of PICO-8 0–31 palette indices); decode it into the same 96×96 preview.
+- **No label or directories:** display clear `NO LABEL` or `FOLDER` text, never a misleading invented game screenshot.
+- Preview data uses a single reusable 18KB pixel buffer (prefer PSRAM), not an independent emulator instance. Cartridge preview files are opened **read-only** under `/sd`.
+- To keep navigation quick, the preview is decoded only after the highlighted entry has been stable for **160 ms**. The image is cached until the selection changes.
+- The yellow/black title screen, six-row Gamepad3 ROM browser, SELECT menu, RESET GAME/RESET CORE, speaker volume, and touch-side virtual controls remain unchanged.
+
+**R10では、左側のPREVIEW欄に実際のカートリッジ画像を表示します。** `.p8.png`は中央のラベル領域、`.p8`は`__label__`を利用します。画像がないROMには「NO LABEL」を表示します。SDカードのROMは読み取りのみです。
+
+**Verification:** Source implementation and static checks completed; this R10 revision has **not been built or tested on hardware yet**. The public `main` and M5Burner versions remain untouched. Use the existing R3 Windows APP-only flashing wrapper `RUN_THIS_R8CORES3_FACES_APP_ONLY.cmd COM10` with the actual COM port.
+
 ## R9 Retro Arcade UI — CoreS3 / Gamepad3 (2026-11-09)
 
 The R8/RONTO8 yellow-and-black 1990s arcade visual theme now extends through the **real CoreS3 320×240 firmware UI**, not only a mockup. The development branch implements:
