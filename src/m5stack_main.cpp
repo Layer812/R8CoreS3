@@ -210,7 +210,7 @@ static void arcade_logo(int x, int y, int scale)
     }
 }
 
-static void arcade_title_bar(const char* heading, const char* status)
+static void arcade_title_bar(const char* heading)
 {
     const uint16_t gold = arcade_gold();
     M5.Display.fillRect(0, 0, 320, 34, gold);
@@ -219,10 +219,6 @@ static void arcade_title_bar(const char* heading, const char* status)
     M5.Display.setTextColor(TFT_BLACK, gold);
     M5.Display.setCursor(58, 9);
     M5.Display.print(heading);
-    if (status && *status) {
-        M5.Display.setCursor(211, 9);
-        M5.Display.print(status);
-    }
     M5.Display.fillRect(8, 33, 304, 3, TFT_BLACK);
 }
 
@@ -455,7 +451,7 @@ static void draw_browser()
 
     if (faces) {
         // Gamepad3: split file-info / ROM-list design from the approved concept.
-        arcade_title_bar("ROM SELECT", "R10 PAD");
+        arcade_title_bar("ROM SELECT");
         M5.Display.setTextSize(2);
         M5.Display.setTextColor(TFT_BLACK, gold);
         M5.Display.setCursor(10, 43);
@@ -828,21 +824,8 @@ static uint16_t poll_controller_input()
         if (btn == 0) g_swallow_until_release = false;
         return 0; // Do not leak A/B/SELECT that closed the menu into the game.
     }
-    // Show a large, live key name in the existing ROM browser header.
-    // This confirms that the button reached RONTO8 without requiring
-    // a separate diagnostics program or a tiny-text serial console.
-    if (!g_emulator_ready && is_present) {
-        static uint16_t last_displayed_key = 0xFFFFu;
-        if (btn != last_displayed_key) {
-            last_displayed_key = btn;
-            const uint16_t yellow = M5.Display.color565(253, 192, 0);
-            M5.Display.fillRect(195, 0, 125, 28, yellow);
-            M5.Display.setTextColor(TFT_BLACK, yellow);
-            M5.Display.setTextSize(2);
-            M5.Display.setCursor(202, 9);
-            M5.Display.print(g_faces.keyLabel());
-        }
-    }
+    // UI is no longer repainted by key state. The ROM selection highlight
+    // updates via draw_browser(), and no debug labels compete with the title.
     return btn;
 }
 
@@ -1116,7 +1099,7 @@ static void draw_select_menu()
 {
     const uint16_t gold = arcade_gold();
     M5.Display.fillScreen(gold);
-    arcade_title_bar(g_emulator_ready ? "GAME MENU" : "SYSTEM MENU", "R10");
+    arcade_title_bar(g_emulator_ready ? "GAME MENU" : "SYSTEM MENU");
 
     const int rows = select_menu_count();
     for (int i = 0; i < rows; ++i) {
