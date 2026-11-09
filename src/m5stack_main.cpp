@@ -180,12 +180,19 @@ static void draw_browser()
     M5.Display.println("R8 BROWSER");
     // R4 is an always-visible version indicator, with a large connection status.
     M5.Display.setCursor(210, 9);
-    M5.Display.print(faces ? "R4 PAD" : "R4 TOUCH");
+    M5.Display.print(faces ? "R5 PAD" : "R5 TOUCH");
 
     M5.Display.setTextSize(faces ? 2 : 1);
     M5.Display.setTextColor(TFT_WHITE, bg_gray);
     M5.Display.setCursor(faces ? 8 : 79, 34); 
     M5.Display.println(g_browser_path);
+    // Integrated visibility of the I2C result; not a separate diagnostic app.
+    if (!faces) {
+        M5.Display.setTextSize(2);
+        M5.Display.setCursor(80, 219);
+        M5.Display.setTextColor(TFT_YELLOW, TFT_BLACK);
+        M5.Display.print(g_faces.label());
+    }
 
     int visible = 9; // 画面内に収まるよう調整
     int start = 0;
@@ -624,17 +631,16 @@ void show_ronto8_splash() {
     M5.Display.setTextSize(2);
     M5.Display.setTextColor(TFT_BLACK, r4_yellow);
     M5.Display.setCursor(18, 148);
-    M5.Display.print(g_faces.present.load() ? "R4 GAMEPAD READY" : "R4 NO GAMEPAD");
-
-    // 3. ライセンス情報を一番下に配置
-    if (g_faces.present.load()) {
-        M5.Display.setTextSize(2);
-        M5.Display.setCursor(12, 220);
-        M5.Display.println("(C) RONTO8");
-    } else {
-        M5.Display.setCursor(58, 220);
-        M5.Display.println("(C)RONTO8. BASED ON FEMTO8 & ZEPTO8.");
+    M5.Display.print(g_faces.present.load() ? "R5 GAMEPAD READY" : "R5 NO GAMEPAD");
+    if (!g_faces.present.load()) {
+        M5.Display.setCursor(18, 203);
+        M5.Display.print(g_faces.label());
     }
+
+    // Keep all text at readable size 2 in the Gamepad R5 boot view.
+    M5.Display.setTextSize(2);
+    M5.Display.setCursor(18, 222);
+    M5.Display.println("(C) RONTO8");
 
     while (true) {
         M5.update();
