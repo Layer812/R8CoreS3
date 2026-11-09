@@ -180,7 +180,7 @@ static void draw_browser()
     M5.Display.println("R8 BROWSER");
     // R4 is an always-visible version indicator, with a large connection status.
     M5.Display.setCursor(210, 9);
-    M5.Display.print(faces ? "R5 PAD" : "R5 TOUCH");
+    M5.Display.print(faces ? g_faces.keyLabel() : "R6 TOUCH");
 
     M5.Display.setTextSize(faces ? 2 : 1);
     M5.Display.setTextColor(TFT_WHITE, bg_gray);
@@ -511,7 +511,23 @@ static uint16_t poll_controller_input()
         if (!is_present) draw_virtual_gamepad();
         Serial.printf("RONTO8 Faces Gamepad3: %s\n", is_present ? "attached" : "detached");
     }
-    return is_present ? g_faces.buttons() : get_touch_state();
+    const uint16_t btn = is_present ? g_faces.buttons() : get_touch_state();
+    // Show a large, live key name in the existing ROM browser header.
+    // This confirms that the button reached RONTO8 without requiring
+    // a separate diagnostics program or a tiny-text serial console.
+    if (!g_emulator_ready && is_present) {
+        static uint16_t last_displayed_key = 0xFFFFu;
+        if (btn != last_displayed_key) {
+            last_displayed_key = btn;
+            const uint16_t yellow = M5.Display.color565(253, 192, 0);
+            M5.Display.fillRect(195, 0, 125, 28, yellow);
+            M5.Display.setTextColor(TFT_BLACK, yellow);
+            M5.Display.setTextSize(2);
+            M5.Display.setCursor(202, 9);
+            M5.Display.print(g_faces.keyLabel());
+        }
+    }
+    return btn;
 }
 
 extern "C" void m5stack_update_input()
@@ -631,7 +647,7 @@ void show_ronto8_splash() {
     M5.Display.setTextSize(2);
     M5.Display.setTextColor(TFT_BLACK, r4_yellow);
     M5.Display.setCursor(18, 148);
-    M5.Display.print(g_faces.present.load() ? "R5 GAMEPAD READY" : "R5 NO GAMEPAD");
+    M5.Display.print(g_faces.present.load() ? "R6 GAMEPAD READY" : "R6 NO GAMEPAD");
     if (!g_faces.present.load()) {
         M5.Display.setCursor(18, 203);
         M5.Display.print(g_faces.label());
