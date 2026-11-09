@@ -328,6 +328,7 @@ void p8_flip(void);
 void p8_flush_cartdata(void);
 int p8_init(void);
 int p8_init_file_with_param(const char *file_name, const char *param);
+int p8_reload_file_with_param(const char *file_name, const char *param);
 void p8_step();
 void p8_load_new(const char *filename, const char *param);
 void p8_set_skip_main_loop_if_no_callbacks(bool skip);
