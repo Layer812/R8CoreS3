@@ -39,16 +39,34 @@ M5Stack **CoreS3 + Faces Bottom3 (A168) + Faces Gamepad3 (A004-V3)** are support
 Gamepad3 is detected automatically through the M5-Bus I2C connection (SDA=GPIO12, SCL=GPIO11, IRQ=GPIO10, I2C address 0x08, Gamepad model ID 0x03).
 The driver reads the controls without rewriting the Gamepad3 firmware or configuration.
 
-- **Detected:** physical gamepad mode; PICO-8's square screen fills the LCD height at 240×240, with 40-pixel sidebars to avoid stretching.
-- **Not detected:** original on-screen touch gamepad with its original 192×192 image.
+- **Detected:** physical Gamepad3 mode; 320×240 fullscreen on the CoreS3 LCD, with no on-screen controls or black bars. This fills the 4:3 screen by stretching PICO-8's original square image (non-square pixels).
+- **Not detected:** original on-screen touch gamepad and 192×192 rendering.
 - **Keys:** D-pad = movement / ROM browser; A = O / confirm; B = X / back; START = pause / confirm; SELECT+UP/DOWN = volume.
-- The gamepad can be connected before startup. Later connection or removal is rechecked periodically.
-- The SD ROM browser also uses the available display width when the physical gamepad is detected.
+- **Stability:** IRQ-driven 1-byte direct key reads, periodic I2C model-ID probes, multiple failed probes required before disconnecting.
+- ROM browser is full-width in Gamepad3 mode; the header says PAD READY (or TOUCH when no Gamepad3 is found).
+- Touching the splash screen always works as a fallback, even when the Gamepad3 is detected.
 
-CoreS3 + Faces Bottom3 + Gamepad3 の組み合わせを開発ブランチで自動検出します。接続時は仮想ボタンを消し、PICO-8の縦横比を維持して 240×240 に拡大表示します。接続していない場合は従来どおりタッチ式操作です。
+### ⚠️ Faces Bottom3 LED IO switch / LED切替スイッチについて
 
-**Status / 状態:** Source implementation only; hardware verification and firmware build are pending. Existing M5Burner releases are unchanged.
-**開発版はソース実装済みですが、実機・ビルドはまだ未確認です。従来のM5Burner公開版は変更していません。**
+**Power off before changing the switch. Set the Faces Bottom3's LED IO switch to `G25`, not `G15`.**
+The Faces Bottom3 schematic connects its SK6812 chain to selectable G15/G25 M-Bus signals. On CoreS3:
+- Bottom3 **G15** lands on CoreS3 **GPIO13**, used by the internal I2S speaker output. Audio may cause unwanted bright white RGB LED illumination.
+- Bottom3 **G25** lands on CoreS3 **GPIO5**, which this development firmware initializes with an all-off SK6812 frame (10 LEDs) at boot.
+
+**切替前に電源を切り、Faces Bottom3のLED IOを`G25`側へ変更してください。** G15側はCoreS3のスピーカー出力と重なるため、音声によってLEDが異常点灯する可能性があります。G25側では起動時に10個のLEDを消灯します。
+
+CoreS3 + Faces Bottom3 + Gamepad3を自動認識し、ゲーム画面を320×240の液晶全面に表示します。PICO-8の正方形画面を4:3に引き伸ばすため縦横比は変わります。未接続時は従来のタッチ操作です。
+
+**Status / 状態:** Initial APP-only build and factory-slot flashing succeeded on a CoreS3 on 2026-11-09. This follow-up display/input/LED revision has not yet been rebuilt or physically verified. Existing M5Burner releases and main are unchanged.
+**初回開発版のビルド・factory APPのみの書き込みは実機で成功済み。今回の改訂版は未ビルド・実機未確認です。公開版とmainは未変更です。**
+
+### Safe Windows APP-only firmware update / Windows書き込み
+
+From the previously provided R3 ZIP folder:
+```bat
+RUN_THIS_R8CORES3_FACES_APP_ONLY.cmd COM10
+```
+The script updates this development branch, builds, reads and verifies the installed partition table, and flashes only the selected APP slot. Do not use a generic `pio run --target upload` command if protecting existing NVS/storage and partition table is necessary.
 
 ## ⚙️ Installation / インストール
 
