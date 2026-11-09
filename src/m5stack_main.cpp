@@ -532,11 +532,21 @@ extern "C" void p8_render()
     xSemaphoreTake(doneSem, portMAX_DELAY);
     M5.update(); // SAFE ZONE for I2C
     const int image_size = g_faces.present.load() ? kFacesGameSize : kTouchGameSize;
+    // Two fixed lookup tables avoid per-pixel integer divisions at 240x240.
+    static uint8_t map192[kTouchGameSize];
+    static uint8_t map240[kFacesGameSize];
+    static bool maps_ready = false;
+    if (!maps_ready) {
+        for (int i = 0; i < kTouchGameSize; ++i) map192[i] = (i * 128) / kTouchGameSize;
+        for (int i = 0; i < kFacesGameSize; ++i) map240[i] = (i * 128) / kFacesGameSize;
+        maps_ready = true;
+    }
+    const uint8_t* pos = g_faces.present.load() ? map240 : map192;
     for (int y = 0; y < image_size; y++) {
+        const int src_y = pos[y];
         for (int x = 0; x < image_size; x++) {
             uint8_t c;
-            int src_x = (x * 128) / image_size;
-            int src_y = (y * 128) / image_size;
+            const int src_x = pos[x];
             if (src_x % 2 == 0) {
                 c = vram[(src_y * 64) + (src_x / 2)] & 0x0F;
             } else {
@@ -567,18 +577,32 @@ void show_ronto8_splash() {
     M5.Display.setCursor(58, 60);
     M5.Display.print("RONTO8 Core S3");
 
-    // 2. 説明文（3行復活）
-    M5.Display.setTextSize(1);
-    M5.Display.setCursor(58, 95);
-    M5.Display.println("RONTO8: A nu wave in the pico8 console.");
-    M5.Display.setCursor(58, 110);
-    M5.Display.println("Powering beyond hardware limitations.");
-    M5.Display.setCursor(58, 125);
-    M5.Display.println("Acceler8 the portable coding.");
+    // Keep text legible on the physical-controller layout.
+    if (g_faces.present.load()) {
+        M5.Display.setTextSize(2);
+        M5.Display.setCursor(18, 100);
+        M5.Display.println("PICO-8 on CoreS3");
+        M5.Display.setCursor(18, 127);
+        M5.Display.println("Faces Gamepad3");
+    } else {
+        M5.Display.setTextSize(1);
+        M5.Display.setCursor(58, 95);
+        M5.Display.println("RONTO8: A nu wave in the pico8 console.");
+        M5.Display.setCursor(58, 110);
+        M5.Display.println("Powering beyond hardware limitations.");
+        M5.Display.setCursor(58, 125);
+        M5.Display.println("Acceler8 the portable coding.");
+    }
 
     // 3. ライセンス情報を一番下に配置
-    M5.Display.setCursor(58, 220);
-    M5.Display.println("(C)RONTO8. BASED ON FEMTO8 & ZEPTO8.");
+    if (g_faces.present.load()) {
+        M5.Display.setTextSize(2);
+        M5.Display.setCursor(12, 220);
+        M5.Display.println("(C) RONTO8");
+    } else {
+        M5.Display.setCursor(58, 220);
+        M5.Display.println("(C)RONTO8. BASED ON FEMTO8 & ZEPTO8.");
+    }
 
     while (true) {
         M5.update();
