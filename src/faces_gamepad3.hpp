@@ -1,7 +1,7 @@
 #pragma once
-// CoreS3 / M5Stack Faces Bottom3 + Gamepad3
-// Official driver integration; no Gamepad3 firmware/EEPROM writes.
-// M5-Bus 0x08, internal SDA GPIO12 / SCL GPIO11, IRQ GPIO10.
+// RONTO8 CoreS3 Faces Bottom3 + Gamepad3 (A004-V3), R5
+// Internal I2C SDA=GPIO12 SCL=GPIO11, IRQ=GPIO10, default address 0x08.
+// No panel firmware update or persistent peripheral writes.
 #include <Arduino.h>
 #include <M5Unified.h>
 #include <M5Faces.h>
@@ -9,118 +9,197 @@
 
 namespace ronto_faces3 {
 struct Device {
+    enum class Status : uint8_t {
+        Ready, Legacy, BusUnavailable, NoPanel, UnknownModel
+    };
     std::atomic<bool> present{false};
     M5Faces_Gamepad3 official;
+    Status status = Status::NoPanel;
     bool bus_ready = false;
-    bool initialized = false;
-    uint8_t raw = 0xFF;
+    bool official_mode = false;
+    uint8_t address = 0x08;
     uint8_t model_id = 0;
     uint8_t fw_version = 0;
-    uint8_t consecutive_probe_failures = 0;
+    uint8_t raw = 0xFF;
+    uint8_t probe_failures = 0;
+    uint8_t scan_addr = 0x09;
     uint32_t last_probe_ms = 0;
+    uint32_t last_scan_ms = 0;
 
-    // The official sample enables M5.In_I2C using the board's own pins.
+    static constexpr uint32_t freq = 100000;
+    static constexpr int irq_pin = 10;
+
     bool ensureBus() {
+        if (bus_ready) return true;
+        bus_ready = M5.In_I2C.isEnabled();
         if (!bus_ready) {
-            bus_ready = M5.In_I2C.isEnabled();
-            if (!bus_ready) {
-                const int sda = M5.getPin(m5::pin_name_t::in_i2c_sda);
-                const int scl = M5.getPin(m5::pin_name_t::in_i2c_scl);
-                if (sda >= 0 && scl >= 0)
-                    bus_ready = M5.In_I2C.begin(I2C_NUM_1, sda, scl);
-            }
+            // CoreS3 documented M-Bus internal I2C, independent of stale pin maps.
+            bus_ready = M5.In_I2C.begin(I2C_NUM_1, 12, 11);
         }
         return bus_ready;
     }
 
-    bool probe() {
-        model_id = 0;
+    bool registerRead(uint8_t addr, uint8_t reg, uint8_t& value) {
+        return ensureBus() && M5.In_I2C.readRegister(addr, reg, &value, 1, freq);
+    }
+
+    bool ack(uint8_t addr) {
         if (!ensureBus()) return false;
-        const bool ok = M5.In_I2C.readRegister(0x08, 0xD0, &model_id, 1, 100000);
-        if (ok && model_id == 0x03) {
-            uint8_t version = 0;
-            if (M5.In_I2C.readRegister(0x08, 0xFE, &version, 1, 100000))
-                fw_version = version;
-            return true;
+        const bool ok = M5.In_I2C.start(addr, false, freq);
+        M5.In_I2C.stop();
+        return ok;
+    }
+
+    bool directRead(uint8_t addr, uint8_t& value) {
+        if (!ensureBus() || !M5.In_I2C.start(addr, true, freq)) return false;
+        uint8_t sample = 0xFF;
+        const bool read_ok = M5.In_I2C.read(&sample, 1, true);
+        const bool stop_ok = M5.In_I2C.stop();
+        if (!read_ok || !stop_ok || sample == 0x00) return false;
+        value = sample;
+        return true;
+    }
+
+    bool connectAt(uint8_t addr, bool allow_legacy) {
+        uint8_t model = 0;
+        if (registerRead(addr, 0xD0, model) && model == 0x03) {
+            if (official.begin(&M5.In_I2C, addr, freq) == M5FACES_OK) {
+                official.setInterruptPin(irq_pin, false);
+                address = addr;
+                model_id = model;
+                fw_version = 0;
+                registerRead(addr, 0xFE, fw_version);
+                raw = 0xFF;
+                official_mode = true;
+                present.store(true);
+                status = Status::Ready;
+                official.update();
+                raw = official.getState().raw;
+                Serial.printf("RONTO8 Faces R5: official gamepad addr=%02X fw=%02X\n", addr, fw_version);
+                return true;
+            }
+        }
+        // Some legacy panel firmware exposes only the direct key-state protocol.
+        // Only accept this at 0x08, after an ACK and a successful direct READ;
+        // other onboard I2C peripherals must not masquerade as a gamepad.
+        if (allow_legacy && addr == 0x08 && ack(addr)) {
+            uint8_t sample = 0xFF;
+            if (directRead(addr, sample)) {
+                raw = sample;
+                address = addr;
+                official_mode = false;
+                present.store(true);
+                status = Status::Legacy;
+                Serial.println("RONTO8 Faces R5: legacy key read at 0x08");
+                return true;
+            }
         }
         return false;
     }
 
-    bool connect() {
-        if (!probe()) return false;
-        // Library checks model ID in begin(), then implements V03/V04 key-state polling.
-        if (official.begin(&M5.In_I2C) != M5FACES_OK) return false;
-        initialized = true;
-        raw = 0xFF;
-        official.setInterruptPin(10, false); // Poll IRQ, no busy loop.
-        present.store(true);
-        official.update();
-        raw = official.getState().raw;
-        Serial.printf("RONTO8 Faces3: model=0x%02X fw=0x%02X IRQ=%d\n",
-                      model_id, fw_version, digitalRead(10));
-        return true;
+    void classifyFailure() {
+        if (!ensureBus()) {
+            status = Status::BusUnavailable;
+            return;
+        }
+        uint8_t model = 0;
+        if (registerRead(0x08, 0xD0, model)) {
+            model_id = model;
+            status = (model == 0x03) ? Status::NoPanel : Status::UnknownModel;
+        } else {
+            model_id = 0;
+            status = ack(0x08) ? Status::UnknownModel : Status::NoPanel;
+        }
     }
 
     void begin() {
-        pinMode(10, INPUT_PULLUP);
-        for (int attempt = 0; attempt < 4; ++attempt) {
-            if (connect()) break;
-            delay(20);
+        pinMode(irq_pin, INPUT_PULLUP);
+        ensureBus();
+        for (int attempt=0; attempt<3 && !present.load(); ++attempt) {
+            if (!connectAt(0x08, true)) delay(15);
         }
+        if (!present.load()) classifyFailure();
         last_probe_ms = millis();
-        Serial.printf("RONTO8 Faces3 initial status=%s, bus=%d, model=0x%02X, irq=%d\n",
-                      present.load() ? "READY" : "NO PAD", bus_ready, model_id,
-                      digitalRead(10));
+        last_scan_ms = last_probe_ms;
+        Serial.printf("RONTO8 Faces R5: bus=%d SDA=%d SCL=%d 0x08ACK=%d ID=%02X IRQ=%d state=%s\n",
+                      bus_ready, 12, 11, ack(0x08), model_id, digitalRead(irq_pin), label());
     }
 
     void update() {
         const uint32_t now = millis();
-        if (!present.load()) {
-            if ((uint32_t)(now - last_probe_ms) >= 400u) {
+        if (present.load()) {
+            if (official_mode) {
+                if (digitalRead(irq_pin) == LOW) {
+                    for (int i=0; i<3 && digitalRead(irq_pin)==LOW; ++i) {
+                        official.update();
+                        raw = official.getState().raw;
+                    }
+                }
+            } else if (digitalRead(irq_pin) == LOW) {
+                uint8_t next = 0xFF;
+                if (directRead(address, next)) raw = next;
+            }
+            if ((uint32_t)(now-last_probe_ms) >= 5000u) {
                 last_probe_ms = now;
-                connect();
+                uint8_t model=0;
+                const bool okay = official_mode
+                    ? (registerRead(address, 0xD0, model) && model == 0x03)
+                    : ack(address);
+                if (okay) probe_failures=0;
+                else if (++probe_failures >= 4) {
+                    present.store(false);
+                    raw=0xFF;
+                    probe_failures=0;
+                    classifyFailure();
+                }
             }
             return;
         }
 
-        // Use the official Gamepad3 state reader. The driver avoids the
-        // v03/v04 stale-0x00 issue and only publishes valid changed samples.
-        if (initialized && digitalRead(10) == LOW) {
-            for (int i = 0; i < 3 && digitalRead(10) == LOW; ++i) {
-                official.update();
-                raw = official.getState().raw;
-            }
+        // Prefer the expected address. Slow incremental scan also supports
+        // a Gamepad3 with a non-default address, without any configuration writes.
+        if ((uint32_t)(now-last_probe_ms) >= 500u) {
+            last_probe_ms=now;
+            if (connectAt(0x08, true)) return;
+            classifyFailure();
         }
-
-        // Valid model ID proves that the pad is present. Isolated failed reads
-        // must never cause a size/input mode change.
-        if ((uint32_t)(now - last_probe_ms) >= 3000u) {
-            last_probe_ms = now;
-            if (probe()) {
-                consecutive_probe_failures = 0;
-            } else if (++consecutive_probe_failures >= 4) {
-                present.store(false);
-                initialized = false;
-                raw = 0xFF;
-                consecutive_probe_failures = 0;
+        if ((uint32_t)(now-last_scan_ms) >= 250u && ensureBus()) {
+            last_scan_ms=now;
+            for (int i=0; i<3; ++i) {
+                const uint8_t candidate=scan_addr;
+                scan_addr = scan_addr >= 0x77 ? 0x09 : (uint8_t)(scan_addr+1);
+                uint8_t model=0;
+                if (registerRead(candidate, 0xD0, model) && model==0x03 &&
+                    connectAt(candidate, false)) return;
             }
         }
     }
 
+    const char* label() const {
+        switch (status) {
+        case Status::Ready: return "PAD READY";
+        case Status::Legacy: return "PAD LEGACY";
+        case Status::BusUnavailable: return "I2C BUS FAIL";
+        case Status::NoPanel: return "0x08 NO ACK";
+        case Status::UnknownModel: return "0x08 BAD ID";
+        }
+        return "NO GAMEPAD";
+    }
+
     uint16_t buttons() const {
         if (!present.load()) return 0;
-        const uint8_t down = (uint8_t)~raw;
-        uint16_t out = 0;
-        if (down & 0x04u) out |= (1u << 0); // LEFT
-        if (down & 0x08u) out |= (1u << 1); // RIGHT
-        if (down & 0x01u) out |= (1u << 2); // UP
-        if (down & 0x02u) out |= (1u << 3); // DOWN
-        if (down & 0x10u) out |= (1u << 4); // A -> O
-        if (down & 0x20u) out |= (1u << 5); // B -> X
-        if (down & 0x80u) out |= (1u << 6); // START -> pause / confirm
+        const uint8_t down=(uint8_t)~raw;
+        uint16_t out=0;
+        if (down & 0x04u) out|=(1u<<0);
+        if (down & 0x08u) out|=(1u<<1);
+        if (down & 0x01u) out|=(1u<<2);
+        if (down & 0x02u) out|=(1u<<3);
+        if (down & 0x10u) out|=(1u<<4);
+        if (down & 0x20u) out|=(1u<<5);
+        if (down & 0x80u) out|=(1u<<6);
         if (down & 0x40u) {
-            if (down & 0x01u) { out &= ~(1u << 2); out |= (1u << 8); }
-            if (down & 0x02u) { out &= ~(1u << 3); out |= (1u << 7); }
+            if (down & 0x01u) { out&=~(1u<<2); out|=(1u<<8); }
+            if (down & 0x02u) { out&=~(1u<<3); out|=(1u<<7); }
         }
         return out;
     }
