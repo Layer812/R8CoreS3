@@ -868,7 +868,8 @@ static void draw_select_menu()
     M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
     M5.Display.setTextSize(2);
     M5.Display.setCursor(13, 219);
-    M5.Display.print("A:OK B:BACK SEL:CLOSE");
+    M5.Display.print(g_menu_selected == select_volume_row()
+        ? "LEFT/RIGHT:VOL B:BACK" : "A:OK B:BACK SEL:CLOSE");
 }
 
 static void begin_select_menu()
@@ -879,6 +880,13 @@ static void begin_select_menu()
     g_menu_volume_dirty = false;
     g_menu_prev_btn = (1u << 9); // Opening SELECT must be released before toggling.
     g_audio_hold.store(true);
+    // SELECT is seen in p8_post_flip, after p8_render queued a DMA frame.
+    // Wait for that last game's frame before drawing the menu.
+    if (doneSem) {
+        xSemaphoreTake(doneSem, portMAX_DELAY);
+        M5.Display.waitDMA();
+        xSemaphoreGive(doneSem);
+    }
     draw_select_menu();
 }
 
@@ -937,7 +945,7 @@ static void update_select_menu()
         } else if (g_menu_selected == select_volume_row()) {
             // A on volume increases it; LEFT/RIGHT also work.
             adjust_select_volume(+16);
-        } else if (g_emulator_ready && !g_current_rom_path.isEmpty()) {
+        } else if (g_emulator_ready && g_current_rom_path.length() != 0) {
             // p8_restart() longjmps through a returned stack frame on this
             // CoreS3 build. Use a fresh cartridge/Lua reload instead.
             M5.Display.fillScreen(TFT_BLACK);
