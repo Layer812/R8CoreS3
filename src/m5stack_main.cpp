@@ -922,7 +922,7 @@ void show_ronto8_splash()
     arcade_logo(92, 11, 12);
     M5.Display.setTextColor(TFT_BLACK, gold);
     M5.Display.setTextSize(4);
-    M5.Display.setCursor(106, 99);
+    M5.Display.setCursor(82, 99);  // Align RONTO8 below the R8 logo (one glyph left).
     M5.Display.print("RONTO8");
     M5.Display.setTextSize(2);
     M5.Display.setCursor(65, 137);
