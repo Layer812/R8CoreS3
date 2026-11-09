@@ -73,8 +73,12 @@ struct Device {
                 official_mode = true;
                 present.store(true);
                 status = Status::Ready;
-                official.update();
-                raw = official.getState().raw;
+                // Published V03 protocol uses direct 1-byte READ for key state.
+                // Do not prefix register 0x00 as the library's update() does.
+                if (digitalRead(irq_pin) == LOW) {
+                    uint8_t sample = 0xFF;
+                    if (directRead(addr, sample)) raw = sample;
+                }
                 Serial.printf("RONTO8 Faces R5: official gamepad addr=%02X fw=%02X\n", addr, fw_version);
                 return true;
             }
@@ -128,16 +132,14 @@ struct Device {
     void update() {
         const uint32_t now = millis();
         if (present.load()) {
-            if (official_mode) {
-                if (digitalRead(irq_pin) == LOW) {
-                    for (int i=0; i<3 && digitalRead(irq_pin)==LOW; ++i) {
-                        official.update();
-                        raw = official.getState().raw;
-                    }
+            // Read events identically in official/legacy modes.
+            // A key-state transaction must have no register prefix (M5 protocol).
+            if (digitalRead(irq_pin) == LOW) {
+                for (int i=0; i<3 && digitalRead(irq_pin)==LOW; ++i) {
+                    uint8_t next = 0xFF;
+                    if (!directRead(address, next)) break;
+                    raw = next;
                 }
-            } else if (digitalRead(irq_pin) == LOW) {
-                uint8_t next = 0xFF;
-                if (directRead(address, next)) raw = next;
             }
             if ((uint32_t)(now-last_probe_ms) >= 5000u) {
                 last_probe_ms = now;
