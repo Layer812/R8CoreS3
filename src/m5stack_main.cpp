@@ -184,7 +184,6 @@ static void scan_browser_directory(const String& path)
 // RONTO8 arcade visual identity: 1990s-style yellow/black throughout the UI.
 // Native 320x240 primitives: no external fonts, bitmaps, heap use, or SD reads.
 // ---------------------------------------------------------------------------
-static constexpr uint32_t kArcadeGoldRGB = 0xFFC400u;
 static constexpr int kBrowserRows = 6;
 static constexpr int kBrowserRowH = 24;
 
@@ -251,13 +250,19 @@ static void arcade_browser_info(int cursor)
     }
     // This is file information, NOT a fabricated game screenshot.
     const String name = String(g_browser_name_buf + g_browser_name_offsets[cursor]);
-    const bool dir = g_browser_is_dir[cursor];
-    M5.Display.setCursor(20, 107);
-    M5.Display.print(dir ? "DIR" : "PICO-8");
-    M5.Display.setCursor(20, 134);
-    M5.Display.print(dir ? "FOLDER" : "CART");
-    M5.Display.fillRect(14, 162, 91, 2, TFT_BLACK);
-    M5.Display.setCursor(18, 174);
+    M5.Display.setTextSize(2);
+    // Long names continue across up to three lines, never shrinking the font.
+    for (int line = 0; line < 3; ++line) {
+        const int index = line * 7;
+        if (index >= (int)name.length()) break;
+        String chunk = name.substring(index, index + 7);
+        if (line == 2 && name.length() > 21)
+            chunk = name.substring(14, 19) + "..";
+        M5.Display.setCursor(17, 110 + line * 22);
+        M5.Display.print(chunk);
+    }
+    M5.Display.fillRect(14, 174, 91, 2, TFT_BLACK);
+    M5.Display.setCursor(18, 181);
     M5.Display.printf("%d/%d", cursor + 1, g_browser_count);
 }
 
@@ -265,8 +270,12 @@ static void draw_browser()
 {
     const uint16_t gold = arcade_gold();
     const bool faces = g_faces.present.load();
-    const uint16_t bg = faces ? gold : TFT_BLACK;
-    M5.Display.fillScreen(bg);
+    if (faces) {
+        M5.Display.fillScreen(gold);
+    } else {
+        // Do not erase the side gutters: they hold the touch controller.
+        M5.Display.fillRect(74, 27, 192, 194, TFT_BLACK);
+    }
 
     if (faces) {
         // Gamepad3: split file-info / ROM-list design from the approved concept.
@@ -1142,14 +1151,14 @@ void loop()
         }
         if (pressed & (1 << 1)) { // RIGHT (Page Down)
             if (g_browser_cursor < g_browser_count - 1) {
-                g_browser_cursor += 9;
+                g_browser_cursor += kBrowserRows;
                 if (g_browser_cursor >= g_browser_count) g_browser_cursor = g_browser_count - 1;
                 cursor_moved = true;
             }
         }
         if (pressed & (1 << 0)) { // LEFT (Page Up)
             if (g_browser_cursor > 0) {
-                g_browser_cursor -= 9;
+                g_browser_cursor -= kBrowserRows;
                 if (g_browser_cursor < 0) g_browser_cursor = 0;
                 cursor_moved = true;
             }
