@@ -10,6 +10,15 @@
 #include <string.h>
 #include <stdint.h>
 
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#include "esp_attr.h"
+/* The bytecode dispatch loop is the frequent hot path in _draw().
+ * ESP32-S3 has IRAM (not a dedicated TCM); leave cold helpers in flash. */
+#define R8_LUA_VM_HOT IRAM_ATTR
+#else
+#define R8_LUA_VM_HOT
+#endif
+
 #define lvm_c
 #define LUA_CORE
 
@@ -609,7 +618,7 @@ void luaV_finishOp (lua_State *L) {
 #define vmcase(l,b)	case l: {b}  break;
 #define vmcasenb(l,b)	case l: {b}		/* nb = no break */
 
-void luaV_execute (lua_State *L) {
+void R8_LUA_VM_HOT luaV_execute (lua_State *L) {
   CallInfo *ci = L->ci;
   LClosure *cl;
   TValue *k;

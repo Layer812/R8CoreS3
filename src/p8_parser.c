@@ -667,10 +667,14 @@ int parse_p8_ram(const char *file_name, uint8_t *buffer, int size, uint8_t *memo
     convert_utf8_to_p8scii(&buffer[lua_start], lua_end - lua_start);
 
     if (lua_script) {
-#ifdef OS_FREERTOS
+#if defined(IS_CARDPUTER) && defined(CONFIG_IDF_TARGET_ESP32S3)
+        // CoreS3: use the still-owned source buffer directly; never erase
+        // or write a "romdata" flash partition during cart loading.
+        *lua_script = (const char *)&buffer[lua_start];
+#elif defined(OS_FREERTOS)
         *lua_script = p8_map_lua_script(&buffer[lua_start], lua_end - lua_start);
 #else
-        *lua_script = (const char *) &buffer[lua_start];
+        *lua_script = (const char *)&buffer[lua_start];
 #endif
     }
 
@@ -771,6 +775,14 @@ static int decode_pngle_state(StegoState *state, const char **lua_script, uint8_
         if (lua_script)
             *lua_script = (char *)*decompression_buffer;
 #else
+#if defined(IS_CARDPUTER) && defined(CONFIG_IDF_TARGET_ESP32S3)
+        // CoreS3 firmware must never require or modify a romdata partition.
+        // Keep the decompressed PICO-8 script in its PSRAM-owned buffer
+        // until p8_init_common() finishes compiling it.
+        uint8_t *shrunk = (uint8_t *)rh_realloc_psram(*decompression_buffer, actual_len + 1);
+        if (shrunk) *decompression_buffer = shrunk;
+        if (lua_script) *lua_script = (const char *)*decompression_buffer;
+#else
         const char *mmap_ptr = p8_map_lua_script(*decompression_buffer, actual_len);
         if (mmap_ptr) {
             rh_free(*decompression_buffer);
@@ -788,6 +800,7 @@ static int decode_pngle_state(StegoState *state, const char **lua_script, uint8_
             if (lua_script)
                 *lua_script = (char *)*decompression_buffer;
         }
+#endif
 #endif
     }
     return 0;
