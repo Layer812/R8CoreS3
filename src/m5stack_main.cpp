@@ -872,42 +872,82 @@ extern "C" void m5stack_resume_frame_buf(void)  {}
 // ---------------------------------------------------------------------------
 // レンダリングの超高速化と画面サイズの縮小
 // ---------------------------------------------------------------------------
+// CoreS3: CPU-side RGB565 expansion into existing DMA source buffers.
+// Preserve the verified 320x240 (Faces) / 192x192 (touch) geometry and
+// rotation, while avoiding repeated nibble decoding and duplicate rows.
 extern "C" void p8_render()
 {
     if (!m_memory || !line_buffer[0]) return;
-    uint8_t* vram = &m_memory[0x6000]; // VRAM starts at 0x6000
-    
+
     xSemaphoreTake(doneSem, portMAX_DELAY);
-    M5.update(); // SAFE ZONE for I2C
+    M5.update(); // Keep the CoreS3 I2C/touch safe zone unchanged.
+
     const bool full = g_faces.present.load();
     const int dst_w = full ? kPhysicalWidth : kTouchGameSize;
     const int dst_h = full ? kPhysicalHeight : kTouchGameSize;
-    static uint8_t map192[kTouchGameSize];
-    static uint8_t map320[kPhysicalWidth];
-    static uint8_t map240[kPhysicalHeight];
+
+    struct Sample { uint8_t byte; uint8_t shift; };
+    static Sample samples192[kTouchGameSize];
+    static Sample samples320[kPhysicalWidth];
+    static uint16_t row192[kTouchGameSize];
+    static uint16_t row240[kPhysicalHeight];
     static bool maps_ready = false;
     if (!maps_ready) {
-        for (int i = 0; i < kTouchGameSize; ++i) map192[i] = (i * 128) / kTouchGameSize;
-        for (int i = 0; i < kPhysicalWidth; ++i) map320[i] = (i * 128) / kPhysicalWidth;
-        for (int i = 0; i < kPhysicalHeight; ++i) map240[i] = (i * 128) / kPhysicalHeight;
+        for (int x = 0; x < kTouchGameSize; ++x) {
+            const unsigned sx = (unsigned)x * 128u / kTouchGameSize;
+            samples192[x] = {(uint8_t)(sx >> 1), (uint8_t)((sx & 1u) << 4)};
+            row192[x] = (uint16_t)(((unsigned)x * 128u / kTouchGameSize) * 64u);
+        }
+        for (int x = 0; x < kPhysicalWidth; ++x) {
+            const unsigned sx = (unsigned)x * 128u / kPhysicalWidth;
+            samples320[x] = {(uint8_t)(sx >> 1), (uint8_t)((sx & 1u) << 4)};
+        }
+        for (int y = 0; y < kPhysicalHeight; ++y)
+            row240[y] = (uint16_t)(((unsigned)y * 128u / kPhysicalHeight) * 64u);
         maps_ready = true;
     }
-    const uint8_t* xmap = full ? map320 : map192;
-    const uint8_t* ymap = full ? map240 : map192;
-    for (int y = 0; y < dst_h; y++) {
-        const int src_y = ymap[y];
-        for (int x = 0; x < dst_w; x++) {
-            uint8_t c;
-            const int src_x = xmap[x];
-            if (src_x % 2 == 0) {
-                c = vram[(src_y * 64) + (src_x / 2)] & 0x0F;
-            } else {
-                c = (vram[(src_y * 64) + (src_x / 2)] >> 4) & 0x0F;
-            }
-            line_buffer[render_idx][y * dst_w + x] = m_colors[c];
-        }
+
+    const Sample *xmap = full ? samples320 : samples192;
+    const uint16_t *ymap = full ? row240 : row192;
+
+    uint32_t screen_base = (uint32_t)m_memory[MEMORY_SCREEN_PHYS] << 8;
+    if (screen_base > MEMORY_SIZE - MEMORY_SCREEN_SIZE)
+        screen_base = MEMORY_SCREEN;
+    const uint8_t *vram = m_memory + screen_base;
+
+    // A packed PICO-8 screen byte is two 4-bit pixels. Pre-decode all 256
+    // possible byte values once per frame, including the draw/display
+    // palette mapping; the hot loop is just a table read and a shift.
+    uint16_t pal565[16];
+    const uint8_t *screen_pal = m_memory + MEMORY_PALETTES + PALTYPE_SCREEN * 16;
+    for (int i = 0; i < 16; ++i) {
+        const uint8_t v = screen_pal[i];
+        pal565[i] = m_colors[((v >> 3) & 0x10) | (v & 0x0f)];
     }
-    
+    static uint32_t pair565[256];
+    for (int i = 0; i < 256; ++i)
+        pair565[i] = (uint32_t)pal565[i & 0x0f] |
+                     ((uint32_t)pal565[i >> 4] << 16);
+
+    uint16_t *dst = line_buffer[render_idx];
+    uint16_t previous_row = 0xffffu;
+    for (int y = 0; y < dst_h; ++y) {
+        uint16_t *out = dst + (size_t)y * dst_w;
+        const uint16_t src_row = ymap[y];
+        if (src_row == previous_row) {
+            // Nearest-neighbor scaling repeats many source rows, especially
+            // 128->240. Copy the previous RGB565 row instead of decoding it.
+            memcpy(out, out - dst_w, (size_t)dst_w * sizeof(uint16_t));
+        } else {
+            const uint8_t *src = vram + src_row;
+            for (int x = 0; x < dst_w; ++x) {
+                const Sample &p = xmap[x];
+                out[x] = (uint16_t)(pair565[src[p.byte]] >> p.shift);
+            }
+        }
+        previous_row = src_row;
+    }
+
     g_frame_physical.store(full);
     xSemaphoreGive(flipSem);
 }
