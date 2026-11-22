@@ -490,7 +490,7 @@ int p8_init_file_with_param(const char *file_name, const char *param)
             memcpy(p8t_path + used, ".p8t", 5);
             char *patched_script = apply_p8t_patch(lua_script, p8t_path);
             if (patched_script) {
-                printf("[R8CoreS3] Applied RAM-only patch: %s\\n", p8t_path);
+                printf("[R8CoreS3] Applied RAM-only patch: %s\n", p8t_path);
                 lua_script = patched_script;
                 patched_script_to_free = patched_script;
             }
