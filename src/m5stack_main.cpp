@@ -872,6 +872,25 @@ extern "C" void m5stack_resume_frame_buf(void)  {}
 // ---------------------------------------------------------------------------
 // レンダリングの超高速化と画面サイズの縮小
 // ---------------------------------------------------------------------------
+// Match the Tab5 0.65 PICO-8 screen transform rules in the slow path.
+static inline void r8cores3_transform_pixel(uint8_t mode, int ox, int oy, int &sx, int &sy)
+{
+    sx = ox; sy = oy;
+    switch (mode) {
+    case 1: sx = ox >> 1; break;
+    case 2: sy = oy >> 1; break;
+    case 3: sx = ox >> 1; sy = oy >> 1; break;
+    case 5: sx = (ox < 64) ? ox : 127 - ox; break;
+    case 6: sy = (oy < 64) ? oy : 127 - oy; break;
+    case 7: sx = (ox < 64) ? ox : 127 - ox; sy = (oy < 64) ? oy : 127 - oy; break;
+    case 129: sx = 127 - ox; break;
+    case 130: sy = 127 - oy; break;
+    case 131: case 134: sx = 127 - ox; sy = 127 - oy; break;
+    case 133: sx = 127 - oy; sy = ox; break;
+    case 135: sx = oy; sy = 127 - ox; break;
+    }
+}
+
 // CoreS3: CPU-side RGB565 expansion into existing DMA source buffers.
 // Preserve the verified 320x240 (Faces) / 192x192 (touch) geometry and
 // rotation, while avoiding repeated nibble decoding and duplicate rows.
@@ -918,12 +937,17 @@ extern "C" void p8_render()
     // A packed PICO-8 screen byte is two 4-bit pixels. Pre-decode all 256
     // possible byte values once per frame, including the draw/display
     // palette mapping; the hot loop is just a table read and a shift.
-    uint16_t pal565[16];
+    uint16_t pal565[16], secondary565[16];
     const uint8_t *screen_pal = m_memory + MEMORY_PALETTES + PALTYPE_SCREEN * 16;
     for (int i = 0; i < 16; ++i) {
         const uint8_t v = screen_pal[i];
+        const uint8_t sec = m_memory[MEMORY_PALETTE_SECONDARY + i];
         pal565[i] = m_colors[((v >> 3) & 0x10) | (v & 0x0f)];
+        secondary565[i] = m_colors[((sec >> 3) & 0x10) | (sec & 0x0f)];
     }
+    const uint8_t transform = m_memory[MEMORY_SCREEN_TRANSFORM];
+    const uint8_t high_color = m_memory[MEMORY_HIGH_COLOUR_MODE];
+    const bool normal_screen = transform == 0 && high_color == 0;
     static uint32_t pair565[256];
     for (int i = 0; i < 256; ++i)
         pair565[i] = (uint32_t)pal565[i & 0x0f] |
@@ -938,11 +962,44 @@ extern "C" void p8_render()
             // Nearest-neighbor scaling repeats many source rows, especially
             // 128->240. Copy the previous RGB565 row instead of decoding it.
             memcpy(out, out - dst_w, (size_t)dst_w * sizeof(uint16_t));
-        } else {
+        } else if (normal_screen) {
             const uint8_t *src = vram + src_row;
             for (int x = 0; x < dst_w; ++x) {
                 const Sample &p = xmap[x];
                 out[x] = (uint16_t)(pair565[src[p.byte]] >> p.shift);
+            }
+        } else {
+            // High-color/transform modes are uncommon: prioritize correct
+            // PICO-8 palette semantics over the fast packed-nibble path.
+            const int oy = src_row / 64;
+            for (int x = 0; x < dst_w; ++x) {
+                const Sample &p = xmap[x];
+                const int ox = ((int)p.byte << 1) | (p.shift >> 4);
+                int sx, sy;
+                r8cores3_transform_pixel(transform, ox, oy, sx, sy);
+                const uint8_t bits = vram[(size_t)sy * 64 + (sx >> 1)];
+                const int pix = (sx & 1) ? (bits >> 4) : (bits & 0x0f);
+                uint16_t color = pal565[pix];
+                if (high_color == 0x10) {
+                    const uint8_t flags = m_memory[0x5f70 + (sy >> 3)];
+                    if (flags & (1u << (sy & 7))) color = secondary565[pix];
+                } else if (high_color == 0x20) {
+                    const uint32_t hidden = screen_base + (uint32_t)sy * 64u
+                                          + ((unsigned)(sx + 64) >> 1);
+                    if (hidden < MEMORY_SIZE) {
+                        const uint8_t h = m_memory[hidden];
+                        const uint8_t hp = ((sx + 64) & 1) ? (h >> 4) : (h & 0x0f);
+                        if (hp) color = secondary565[pix];
+                    }
+                } else if ((high_color & 0xf0) == 0x30) {
+                    if ((screen_pal[pix] & 0x0f) == (high_color & 0x0f)) {
+                        int section = sy >> 3;
+                        const uint8_t flags = m_memory[0x5f70 + (sy >> 3)];
+                        if (flags & (1u << (sy & 7))) section = (section + 1) & 15;
+                        color = secondary565[section];
+                    }
+                }
+                out[x] = color;
             }
         }
         previous_row = src_row;
