@@ -244,7 +244,7 @@ int p8_init()
     if (!m_memory) {
         m_memory = (uint8_t *)rh_malloc(MEMORY_SIZE);
         if (!m_memory) {
-            printf("FATAL: Failed to allocate m_memory (32KB)\n");
+            printf("FATAL: Failed to allocate m_memory (64KB)\n");
         }
     }
 #ifdef OS_FREERTOS
