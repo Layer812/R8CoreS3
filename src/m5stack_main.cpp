@@ -894,7 +894,7 @@ static inline void r8cores3_transform_pixel(uint8_t mode, int ox, int oy, int &s
 // CoreS3: CPU-side RGB565 expansion into existing DMA source buffers.
 // Preserve the verified 320x240 (Faces) / 192x192 (touch) geometry and
 // rotation, while avoiding repeated nibble decoding and duplicate rows.
-extern "C" void p8_render()
+extern "C" IRAM_ATTR void p8_render()
 {
     if (!m_memory || !line_buffer[0]) return;
 
@@ -1143,7 +1143,16 @@ void setup()
     flipSem = xSemaphoreCreateBinary();
     doneSem = xSemaphoreCreateBinary();
     xSemaphoreGive(doneSem);
-    xTaskCreatePinnedToCore(flipTask, "flipTask", 4096, NULL, configMAX_PRIORITIES - 2, NULL, 1);
+    // Keep Lua/game + RGB565 expansion on Arduino Core 1. Transfer the
+    // frame on Core 0, below the priority-5 audio producer. The previous
+    // almost-max-priority flipTask on Core 1 could preempt PICO-8 logic.
+    const BaseType_t flip_ok = xTaskCreatePinnedToCore(
+        flipTask, "flipTask", 4096, NULL, 4, NULL, 0);
+    if (flip_ok != pdPASS) {
+        Serial.println("ERROR: cannot start Core0 display task");
+        for (;;) delay(1000);
+    }
+    Serial.println("[R8CoreS3] CPU1 Lua/render; CPU0 LCD(4)+audio(5)");
     
     M5.Display.setColorDepth(16);
     M5.Display.setSwapBytes(true);
