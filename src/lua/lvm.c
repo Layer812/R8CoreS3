@@ -10,6 +10,9 @@
 #include <string.h>
 #include <stdint.h>
 
+#if defined(IS_CARDPUTER)
+#include "sdkconfig.h"
+#endif
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 #include "esp_attr.h"
 /* The bytecode dispatch loop is the frequent hot path in _draw().
