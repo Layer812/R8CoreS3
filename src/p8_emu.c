@@ -113,6 +113,35 @@ uint8_t *m_memory = NULL;
 
 uint8_t *m_overlay_memory = NULL;
 
+// ESP32-S3 has IRAM/DRAM, not ESP32-P4's dedicated TCM.
+// The entire 64 KiB PICO-8 address space is a hot Lua/graphics working set.
+// Previously rh_malloc() routed allocations >32 KiB straight to PSRAM.
+// Prefer internal SRAM when enough space remains for the display/audio/OS;
+// retain the original PSRAM fallback so memory pressure cannot block boot.
+static uint8_t *p8_alloc_main_memory(void)
+{
+#if defined(IS_CARDPUTER) && defined(CONFIG_IDF_TARGET_ESP32S3)
+    const uint32_t caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    const size_t free_bytes = heap_caps_get_free_size(caps);
+    const size_t largest = heap_caps_get_largest_free_block(caps);
+    // Keep a generous SRAM reserve for SPI DMA, stack and device drivers.
+    if (free_bytes >= MEMORY_SIZE + 96u * 1024u && largest >= MEMORY_SIZE) {
+        uint8_t *p = (uint8_t *)heap_caps_malloc(MEMORY_SIZE, caps);
+        if (p) {
+            printf("[R8CoreS3] PICO-8 RAM: 64 KiB internal SRAM (fast)\n");
+            return p;
+        }
+    }
+    printf("[R8CoreS3] PICO-8 RAM: PSRAM fallback (free=%u, largest=%u)\n",
+           (unsigned)free_bytes, (unsigned)largest);
+#endif
+#ifdef OS_FREERTOS
+    return (uint8_t *)rh_malloc(MEMORY_SIZE);
+#else
+    return (uint8_t *)malloc(MEMORY_SIZE);
+#endif
+}
+
 unsigned m_fps = 30;
 unsigned m_actual_fps = 0;
 unsigned m_frames = 0;
@@ -242,7 +271,7 @@ int p8_init()
     xSemaphoreGive(m_drawSemaphore);
 
     if (!m_memory) {
-        m_memory = (uint8_t *)rh_malloc(MEMORY_SIZE);
+        m_memory = p8_alloc_main_memory();
         if (!m_memory) {
             printf("FATAL: Failed to allocate m_memory (64KB)\n");
         }
@@ -393,7 +422,7 @@ int p8_init_file_with_param(const char *file_name, const char *param)
     printf("Loading %s\n", file_name);
     
     if (!m_memory) {
-        m_memory = (uint8_t *)rh_malloc(MEMORY_SIZE);
+        m_memory = p8_alloc_main_memory();
     }
     memset(m_memory, 0, MEMORY_SIZE);
 
@@ -581,7 +610,7 @@ int p8_init_ram(uint8_t *buffer, int size)
     uint8_t *decompression_buffer = NULL;
 
     if (!m_memory) {
-        m_memory = (uint8_t *)rh_malloc(MEMORY_SIZE);
+        m_memory = p8_alloc_main_memory();
     }
     memset(m_memory, 0, MEMORY_SIZE);
 
